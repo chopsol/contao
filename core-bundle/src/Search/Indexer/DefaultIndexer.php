@@ -71,15 +71,11 @@ class DefaultIndexer implements IndexerInterface
             'language' => $language,
             'protected' => false,
             'groups' => [],
-            'pageId' => 0
+            'pageId' => 0,
+            'noSearch' => true, // Causes the indexer to skip this document if there is no json-ld data
         ];
 
         $this->extendMetaFromJsonLdScripts($document, $meta);
-
-        // Causes the indexer to skip this document if there is no json-ld data
-        if (!isset($meta['noSearch'])) {
-            $this->throwBecause('JSONLD is missing');
-        }
 
         // If search was disabled in the page settings, we do not index
         if (isset($meta['noSearch']) && true === $meta['noSearch']) {
