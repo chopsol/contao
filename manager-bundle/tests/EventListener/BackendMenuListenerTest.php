@@ -103,6 +103,32 @@ class BackendMenuListenerTest extends ContaoTestCase
         yield ['preview', ['debug', 'preview']];
     }
 
+    public function testAddsTheHoverClassIfTheDebugModeIsEnabled(): void
+    {
+        $requestStack = new RequestStack();
+        $requestStack->push(new Request());
+
+        $translator = $this->getTranslator();
+        $router = $this->createMock(RouterInterface::class);
+
+        $factory = new MenuFactory();
+        $item = $factory->createItem('alerts');
+
+        $menu = $factory->createItem('headerMenu');
+        $menu->addChild($item);
+
+        $event = new MenuEvent($factory, $menu);
+        $jwtManager = $this->createMock(JwtManager::class);
+        $security = $this->getSecurity();
+
+        $listener = new BackendMenuListener($security, $router, $requestStack, $translator, true, null, $jwtManager);
+        $listener($event);
+
+        $children = $event->getTree()->getChildren();
+
+        $this->assertSame(['class' => 'icon-debug hover', 'title' => 'debug_mode'], $children['debug']->getLinkAttributes());
+    }
+
     public function testDoesNotAddTheDebugButtonIfTheJwtManagerIsNotSet(): void
     {
         $event = $this->createMock(MenuEvent::class);
