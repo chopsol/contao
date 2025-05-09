@@ -12,44 +12,83 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\Controller;
 
+use Contao\CoreBundle\Cache\CacheTagManager;
 use Contao\CoreBundle\Controller\FaviconController;
+use Contao\CoreBundle\Routing\PageFinder;
 use Contao\CoreBundle\Tests\TestCase;
 use Contao\FilesModel;
 use Contao\PageModel;
-use FOS\HttpCache\ResponseTagger;
-use PHPUnit\Framework\MockObject\MockObject;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 class FaviconControllerTest extends TestCase
 {
-    public function testNotFoundIfNoFaviconProvided(): void
+    public function testThrowsNotFoundHttpExceptionIfNoRootPageFound(): void
     {
-        $pageModelAdapter = $this->mockAdapter(['findPublishedFallbackByHostname']);
-        $pageModelAdapter
+        $request = Request::create('https://www.example.org/favicon.ico');
+
+        $pageFinder = $this->createMock(PageFinder::class);
+        $pageFinder
             ->expects($this->once())
-            ->method('findPublishedFallbackByHostname')
+            ->method('findRootPageForHostAndLanguage')
+            ->with('www.example.org')
             ->willReturn(null)
         ;
 
-        $framework = $this->mockContaoFramework([PageModel::class => $pageModelAdapter]);
+        $framework = $this->mockContaoFramework();
         $framework
-            ->expects($this->once())
+            ->expects($this->never())
             ->method('initialize')
         ;
 
-        $request = Request::create('/robots.txt');
-        $controller = new FaviconController($framework, $this->createMock(ResponseTagger::class));
-        $response = $controller($request);
+        $this->expectException(NotFoundHttpException::class);
 
-        $this->assertSame(Response::HTTP_NOT_FOUND, $response->getStatusCode());
+        $controller = new FaviconController($framework, $pageFinder, $this->getFixturesDir(), $this->createMock(CacheTagManager::class));
+        $controller($request);
+    }
+
+    public function testThrowsNotFoundHttpExceptionIfNoFaviconProvided(): void
+    {
+        $request = Request::create('https://www.example.org/favicon.ico');
+        $pageModel = $this->mockClassWithProperties(PageModel::class, ['id' => 42, 'favicon' => null]);
+
+        $pageFinder = $this->createMock(PageFinder::class);
+        $pageFinder
+            ->expects($this->once())
+            ->method('findRootPageForHostAndLanguage')
+            ->with('www.example.org')
+            ->willReturn($pageModel)
+        ;
+
+        $framework = $this->mockContaoFramework();
+        $framework
+            ->expects($this->never())
+            ->method('initialize')
+        ;
+
+        $this->expectException(NotFoundHttpException::class);
+
+        $controller = new FaviconController($framework, $pageFinder, $this->getFixturesDir(), $this->createMock(CacheTagManager::class));
+        $controller($request);
     }
 
     public function testRegularFavicon(): void
     {
-        $controller = $this->getController(__DIR__.'/../Fixtures/images/favicon.ico');
+        $controller = $this->getController('images/favicon.ico');
 
-        $request = Request::create('/favicon.ico');
+        $request = Request::create('https://www.example.org/favicon.ico');
+        $response = $controller($request);
+
+        $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
+        $this->assertSame('image/x-icon', $response->headers->get('Content-Type'));
+    }
+
+    public function testIgnoresRequestPort(): void
+    {
+        $controller = $this->getController('images/favicon.ico');
+
+        $request = Request::create('https://www.example.org:8000/favicon.ico');
         $response = $controller($request);
 
         $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
@@ -58,33 +97,35 @@ class FaviconControllerTest extends TestCase
 
     public function testSvgFavicon(): void
     {
-        $controller = $this->getController(__DIR__.'/../Fixtures/images/favicon.svg');
+        $controller = $this->getController('images/favicon.svg');
 
-        $request = Request::create('/favicon.ico');
+        $request = Request::create('https://www.example.org/favicon.ico');
         $response = $controller($request);
 
         $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
         $this->assertSame('image/svg+xml', $response->headers->get('Content-Type'));
     }
 
+    public function testPngFavicon(): void
+    {
+        $controller = $this->getController('images/favicon.png');
+
+        $request = Request::create('https://www.example.org/favicon.ico');
+        $response = $controller($request);
+
+        $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
+        $this->assertSame('image/png', $response->headers->get('Content-Type'));
+    }
+
     private function getController(string $iconPath): FaviconController
     {
-        /** @var PageModel&MockObject $pageModel */
         $pageModel = $this->mockClassWithProperties(PageModel::class);
         $pageModel->id = 42;
         $pageModel->favicon = 'favicon-uuid';
 
-        /** @var FilesModel&MockObject $faviconModel */
         $faviconModel = $this->mockClassWithProperties(FilesModel::class);
         $faviconModel->path = $iconPath;
         $faviconModel->extension = substr($iconPath, -3);
-
-        $pageModelAdapter = $this->mockAdapter(['findPublishedFallbackByHostname']);
-        $pageModelAdapter
-            ->expects($this->once())
-            ->method('findPublishedFallbackByHostname')
-            ->willReturn($pageModel)
-        ;
 
         $filesModelAdapter = $this->mockAdapter(['findByUuid']);
         $filesModelAdapter
@@ -95,7 +136,6 @@ class FaviconControllerTest extends TestCase
         ;
 
         $framework = $this->mockContaoFramework([
-            PageModel::class => $pageModelAdapter,
             FilesModel::class => $filesModelAdapter,
         ]);
 
@@ -104,13 +144,21 @@ class FaviconControllerTest extends TestCase
             ->method('initialize')
         ;
 
-        $responseTagger = $this->createMock(ResponseTagger::class);
-        $responseTagger
+        $pageFinder = $this->createMock(PageFinder::class);
+        $pageFinder
             ->expects($this->once())
-            ->method('addTags')
-            ->with(['contao.db.tl_page.42'])
+            ->method('findRootPageForHostAndLanguage')
+            ->with('www.example.org')
+            ->willReturn($pageModel)
         ;
 
-        return new FaviconController($framework, $responseTagger);
+        $cacheTags = $this->createMock(CacheTagManager::class);
+        $cacheTags
+            ->expects($this->once())
+            ->method('tagWithModelInstance')
+            ->with($pageModel)
+        ;
+
+        return new FaviconController($framework, $pageFinder, $this->getFixturesDir(), $cacheTags);
     }
 }

@@ -15,6 +15,7 @@ namespace Contao\CoreBundle\Tests\Routing;
 use Contao\CoreBundle\ContaoCoreBundle;
 use Contao\CoreBundle\Routing\ScopeMatcher;
 use Contao\CoreBundle\Tests\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Event\KernelEvent;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
@@ -22,10 +23,7 @@ use Symfony\Component\HttpKernel\KernelInterface;
 
 class ScopeMatcherTest extends TestCase
 {
-    /**
-     * @var ScopeMatcher
-     */
-    private $matcher;
+    private ScopeMatcher $matcher;
 
     protected function setUp(): void
     {
@@ -34,28 +32,26 @@ class ScopeMatcherTest extends TestCase
         $this->matcher = $this->mockScopeMatcher();
     }
 
-    /**
-     * @dataProvider masterRequestProvider
-     */
-    public function testRecognizesTheContaoScopes(?string $scope, int $requestType, bool $isMaster, bool $isFrontend, bool $isBackend): void
+    #[DataProvider('mainRequestProvider')]
+    public function testRecognizesTheContaoScopes(string|null $scope, int $requestType, bool $isMain, bool $isFrontend, bool $isBackend): void
     {
         $request = new Request();
         $request->attributes->set('_scope', $scope);
 
         $event = new KernelEvent($this->createMock(KernelInterface::class), $request, $requestType);
 
-        $this->assertSame($isMaster, $this->matcher->isContaoMasterRequest($event));
-        $this->assertSame($isMaster && $isBackend, $this->matcher->isBackendMasterRequest($event));
-        $this->assertSame($isMaster && $isFrontend, $this->matcher->isFrontendMasterRequest($event));
+        $this->assertSame($isMain, $this->matcher->isContaoMainRequest($event));
+        $this->assertSame($isMain && $isBackend, $this->matcher->isBackendMainRequest($event));
+        $this->assertSame($isMain && $isFrontend, $this->matcher->isFrontendMainRequest($event));
         $this->assertSame($isBackend, $this->matcher->isBackendRequest($request));
         $this->assertSame($isFrontend, $this->matcher->isFrontendRequest($request));
     }
 
-    public function masterRequestProvider(): \Generator
+    public static function mainRequestProvider(): iterable
     {
         yield [
             ContaoCoreBundle::SCOPE_BACKEND,
-            HttpKernelInterface::MASTER_REQUEST,
+            HttpKernelInterface::MAIN_REQUEST,
             true,
             false,
             true,
@@ -63,7 +59,7 @@ class ScopeMatcherTest extends TestCase
 
         yield [
             ContaoCoreBundle::SCOPE_FRONTEND,
-            HttpKernelInterface::MASTER_REQUEST,
+            HttpKernelInterface::MAIN_REQUEST,
             true,
             true,
             false,
@@ -71,7 +67,7 @@ class ScopeMatcherTest extends TestCase
 
         yield [
             null,
-            HttpKernelInterface::MASTER_REQUEST,
+            HttpKernelInterface::MAIN_REQUEST,
             false,
             false,
             false,

@@ -14,35 +14,12 @@ namespace Contao\CoreBundle\Picker;
 
 class PickerConfig implements \JsonSerializable
 {
-    /**
-     * @var string
-     */
-    private $context;
-
-    /**
-     * @var array
-     */
-    private $extras;
-
-    /**
-     * @var string|int
-     */
-    private $value;
-
-    /**
-     * @var string
-     */
-    private $current;
-
-    /**
-     * @param string|int $value
-     */
-    public function __construct(string $context, array $extras = [], $value = '', string $current = '')
-    {
-        $this->context = $context;
-        $this->extras = $extras;
-        $this->value = $value;
-        $this->current = $current;
+    public function __construct(
+        private readonly string $context,
+        private array $extras = [],
+        private readonly int|string $value = '',
+        private readonly string $current = '',
+    ) {
     }
 
     public function getContext(): string
@@ -51,7 +28,7 @@ class PickerConfig implements \JsonSerializable
     }
 
     /**
-     * @return array<string,mixed>
+     * @return array<string, mixed>
      */
     public function getExtras(): array
     {
@@ -74,17 +51,17 @@ class PickerConfig implements \JsonSerializable
     /**
      * Returns an extra value for a given provider or the general extra value.
      */
-    public function getExtraForProvider(string $name, string $provider)
+    public function getExtraForProvider(string $name, string $provider): mixed
     {
         return $this->extras[$provider][$name] ?? $this->getExtra($name);
     }
 
-    public function getExtra(string $name)
+    public function getExtra(string $name): mixed
     {
         return $this->extras[$name] ?? null;
     }
 
-    public function setExtra(string $name, $value): void
+    public function setExtra(string $name, mixed $value): void
     {
         $this->extras[$name] = $value;
     }
@@ -112,7 +89,7 @@ class PickerConfig implements \JsonSerializable
      */
     public function urlEncode(): string
     {
-        $data = json_encode($this);
+        $data = json_encode($this, JSON_THROW_ON_ERROR);
 
         if (\function_exists('gzencode') && false !== ($encoded = @gzencode($data))) {
             $data = $encoded;
@@ -134,10 +111,10 @@ class PickerConfig implements \JsonSerializable
             $decoded = $uncompressed;
         }
 
-        $json = @json_decode($decoded, true);
-
-        if (null === $json) {
-            throw new \InvalidArgumentException('Invalid JSON data');
+        try {
+            $json = json_decode($decoded, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            throw new \InvalidArgumentException('Invalid JSON data', 0, $e);
         }
 
         return new self($json['context'], $json['extras'], $json['value'], $json['current']);

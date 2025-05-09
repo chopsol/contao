@@ -14,38 +14,20 @@ namespace Contao\CoreBundle\Config\Dumper;
 
 use Symfony\Component\Config\Loader\LoaderInterface;
 use Symfony\Component\Filesystem\Filesystem;
-use Webmozart\PathUtil\Path;
+use Symfony\Component\Filesystem\Path;
 
 /**
  * Combines multiple files into one PHP file.
  */
 class CombinedFileDumper implements DumperInterface
 {
-    /**
-     * @var Filesystem
-     */
-    private $filesystem;
+    private string $header = "<?php\n"; // add a line-break to prevent the "unexpected $end" error
 
-    /**
-     * @var LoaderInterface
-     */
-    private $loader;
-
-    /**
-     * @var string
-     */
-    private $cacheDir;
-
-    /**
-     * @var string
-     */
-    private $header = "<?php\n"; // add a line-break to prevent the "unexpected $end" error
-
-    public function __construct(Filesystem $filesystem, LoaderInterface $loader, string $cacheDir)
-    {
-        $this->filesystem = $filesystem;
-        $this->loader = $loader;
-        $this->cacheDir = $cacheDir;
+    public function __construct(
+        private readonly Filesystem $filesystem,
+        private readonly LoaderInterface $loader,
+        private readonly string $cacheDir,
+    ) {
     }
 
     /**
@@ -53,14 +35,14 @@ class CombinedFileDumper implements DumperInterface
      */
     public function setHeader(string $header): void
     {
-        if (0 !== strncmp($header, '<?php', 5)) {
+        if (!str_starts_with($header, '<?php')) {
             throw new \InvalidArgumentException('The file header must start with an opening PHP tag.');
         }
 
         $this->header = $header;
     }
 
-    public function dump($files, $cacheFile, array $options = []): void
+    public function dump(array|string $files, string $cacheFile, array $options = []): void
     {
         $buffer = $this->header;
         $type = $options['type'] ?? null;

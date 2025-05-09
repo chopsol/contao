@@ -12,12 +12,19 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\EventListener;
 
-use Symfony\Component\HttpFoundation\Session\Attribute\AttributeBag;
+use Contao\CoreBundle\Session\Attribute\AutoExpiringAttribute;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
+use Symfony\Component\HttpFoundation\Session\SessionInterface;
 use Symfony\Component\HttpKernel\Event\ResponseEvent;
+use Symfony\Component\Security\Http\SecurityRequestAttributes;
 
 /**
+ * The priority must be higher than the one of the Symfony save session listener
+ * (defaults to -1000).
+ *
  * @internal
  */
+#[AsEventListener(priority: -768)]
 class ClearSessionDataListener
 {
     /**
@@ -25,7 +32,7 @@ class ClearSessionDataListener
      */
     public function __invoke(ResponseEvent $event): void
     {
-        if (!$event->isMasterRequest()) {
+        if (!$event->isMainRequest()) {
             return;
         }
 
@@ -39,33 +46,24 @@ class ClearSessionDataListener
             return;
         }
 
-        $this->clearLegacyAttributeBags('FE_DATA');
-        $this->clearLegacyAttributeBags('BE_DATA');
-        $this->clearLegacyFormData();
-    }
-
-    private function clearLegacyAttributeBags(string $key): void
-    {
-        if (!isset($_SESSION[$key])) {
-            return;
-        }
-
-        if (($bag = $_SESSION[$key]) instanceof AttributeBag && !$bag->count()) {
-            unset($_SESSION[$key]);
+        if ($event->getResponse()->isSuccessful()) {
+            $this->clearLoginData($request->getSession());
+            $this->clearAutoExpiringSessionAttributes($request->getSession());
         }
     }
 
-    private function clearLegacyFormData(): void
+    private function clearLoginData(SessionInterface $session): void
     {
-        if (isset($_SESSION['FORM_DATA']['SUBMITTED_AT'])) {
-            $waitingTime = max(30, (int) ini_get('max_execution_time')) * 2;
+        $session->remove(SecurityRequestAttributes::AUTHENTICATION_ERROR);
+        $session->remove(SecurityRequestAttributes::LAST_USERNAME);
+    }
 
-            // Leave the data available for $waitingTime seconds (for redirect confirmation pages)
-            if ($_SESSION['FORM_DATA']['SUBMITTED_AT'] + $waitingTime > time()) {
-                return;
+    private function clearAutoExpiringSessionAttributes(SessionInterface $session): void
+    {
+        foreach ($session->all() as $k => $v) {
+            if ($v instanceof AutoExpiringAttribute && $v->isExpired()) {
+                $session->remove($k);
             }
         }
-
-        unset($_SESSION['FORM_DATA'], $_SESSION['FILES']);
     }
 }

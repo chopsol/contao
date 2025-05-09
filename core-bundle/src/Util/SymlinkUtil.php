@@ -13,7 +13,7 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Util;
 
 use Symfony\Component\Filesystem\Filesystem;
-use Webmozart\PathUtil\Path;
+use Symfony\Component\Filesystem\Path;
 
 class SymlinkUtil
 {
@@ -57,14 +57,14 @@ class SymlinkUtil
 
         $link = Path::normalize($link);
 
-        if (false !== strpos($link, '../')) {
+        if (str_contains($link, '../')) {
             throw new \InvalidArgumentException('The symlink path must not be relative.');
         }
 
         $linkPath = Path::join($projectDir, $link);
 
         if (!is_link($linkPath) && (new Filesystem())->exists($linkPath)) {
-            throw new \LogicException(sprintf('The path "%s" exists and is not a symlink.', $link));
+            throw new \LogicException(\sprintf('The path "%s" exists and is not a symlink.', $link));
         }
     }
 }

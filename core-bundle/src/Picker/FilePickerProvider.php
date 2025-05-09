@@ -12,40 +12,35 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Picker;
 
+use Contao\CoreBundle\DependencyInjection\Attribute\AsPickerProvider;
 use Contao\CoreBundle\Framework\FrameworkAwareInterface;
 use Contao\CoreBundle\Framework\FrameworkAwareTrait;
 use Contao\FilesModel;
 use Contao\StringUtil;
+use Contao\System;
 use Contao\Validator;
 use Knp\Menu\FactoryInterface;
+use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\Filesystem\Path;
 use Symfony\Component\Routing\RouterInterface;
-use Symfony\Component\Security\Core\Security;
 use Symfony\Contracts\Translation\TranslatorInterface;
-use Webmozart\PathUtil\Path;
 
+#[AsPickerProvider(priority: 160)]
 class FilePickerProvider extends AbstractInsertTagPickerProvider implements DcaPickerProviderInterface, FrameworkAwareInterface
 {
     use FrameworkAwareTrait;
 
     /**
-     * @var Security
+     * @internal
      */
-    private $security;
-
-    /**
-     * @var string
-     */
-    private $uploadPath;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.picker.file_provider" service instead
-     */
-    public function __construct(FactoryInterface $menuFactory, RouterInterface $router, TranslatorInterface $translator, Security $security, string $uploadPath)
-    {
+    public function __construct(
+        FactoryInterface $menuFactory,
+        RouterInterface $router,
+        TranslatorInterface $translator,
+        private readonly Security $security,
+        private readonly string $uploadPath,
+    ) {
         parent::__construct($menuFactory, $router, $translator);
-
-        $this->security = $security;
-        $this->uploadPath = $uploadPath;
     }
 
     public function getName(): string
@@ -53,7 +48,7 @@ class FilePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
         return 'filePicker';
     }
 
-    public function supportsContext($context): bool
+    public function supportsContext(string $context): bool
     {
         return \in_array($context, ['file', 'link'], true) && $this->security->isGranted('contao_user.modules', 'files');
     }
@@ -67,7 +62,7 @@ class FilePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
         return $this->isMatchingInsertTag($config) || Path::isBasePath($this->uploadPath, $config->getValue());
     }
 
-    public function getDcaTable(): string
+    public function getDcaTable(PickerConfig|null $config = null): string
     {
         return 'tl_files';
     }
@@ -81,24 +76,22 @@ class FilePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
         return $this->getLinkDcaAttributes($config);
     }
 
-    public function convertDcaValue(PickerConfig $config, $value): string
+    public function convertDcaValue(PickerConfig $config, mixed $value): int|string
     {
         if ('file' === $config->getContext()) {
             return $value;
         }
 
-        /** @var FilesModel $filesAdapter */
         $filesAdapter = $this->framework->getAdapter(FilesModel::class);
-        $filesModel = $filesAdapter->findByPath(rawurldecode($value));
 
-        if ($filesModel instanceof FilesModel) {
-            return sprintf($this->getInsertTag($config), StringUtil::binToUuid($filesModel->uuid));
+        if ($filesModel = $filesAdapter->findByPath(rawurldecode($value))) {
+            return \sprintf($this->getInsertTag($config), StringUtil::binToUuid($filesModel->uuid));
         }
 
         return $value;
     }
 
-    protected function getRouteParameters(PickerConfig $config = null): array
+    protected function getRouteParameters(PickerConfig|null $config = null): array
     {
         return ['do' => 'files'];
     }
@@ -113,10 +106,13 @@ class FilePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
      */
     private function convertValueToPath(string $value): string
     {
-        /** @var FilesModel $filesAdapter */
+        if (!Validator::isUuid($value)) {
+            return $value;
+        }
+
         $filesAdapter = $this->framework->getAdapter(FilesModel::class);
 
-        if (Validator::isUuid($value) && ($filesModel = $filesAdapter->findByUuid($value)) instanceof FilesModel) {
+        if ($filesModel = $filesAdapter->findByUuid($value)) {
             return $filesModel->path;
         }
 
@@ -126,7 +122,7 @@ class FilePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
     /**
      * Urlencodes a file path preserving slashes.
      *
-     * @see \Contao\System::urlEncode()
+     * @see System::urlEncode()
      */
     private function urlEncode(string $strPath): string
     {
@@ -134,13 +130,13 @@ class FilePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
     }
 
     /**
-     * @return array<string,string|bool>
+     * @return array<string, string|bool>
      */
     private function getFileDcaAttributes(PickerConfig $config): array
     {
         $attributes = array_intersect_key(
             $config->getExtras(),
-            array_flip(['fieldType', 'files', 'filesOnly', 'path', 'extensions'])
+            array_flip(['fieldType', 'files', 'filesOnly', 'path', 'extensions']),
         );
 
         if (!isset($attributes['fieldType'])) {
@@ -161,7 +157,7 @@ class FilePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
     }
 
     /**
-     * @return array<string,string|bool>
+     * @return array<string, array|string|bool>
      */
     private function getLinkDcaAttributes(PickerConfig $config): array
     {
@@ -173,16 +169,18 @@ class FilePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
         $value = $config->getValue();
 
         if ($value) {
-            $chunks = $this->getInsertTagChunks($config);
-
-            if (false !== strpos($value, $chunks[0])) {
-                $value = str_replace($chunks, '', $value);
+            if ($this->isMatchingInsertTag($config)) {
+                $value = $this->getInsertTagValue($config);
             }
 
             if (Path::isBasePath($this->uploadPath, $value)) {
                 $attributes['value'] = $this->urlEncode($value);
             } else {
                 $attributes['value'] = $this->urlEncode($this->convertValueToPath($value));
+            }
+
+            if ($flags = $this->getInsertTagFlags($config)) {
+                $attributes['flags'] = $flags;
             }
         }
 

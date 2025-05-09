@@ -12,23 +12,25 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\Contao\Database;
 
-use Contao\CoreBundle\Tests\Fixtures\Database\DoctrineArrayStatement;
 use Contao\Database\Result;
+use Doctrine\DBAL\Cache\ArrayResult;
+use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Result as DoctrineResult;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class ResultTest extends TestCase
 {
     public function testEmptyResult(): void
     {
-        $resultStatement = new Result(new DoctrineArrayStatement([]), 'SELECT * FROM test');
-        $resultArray = new Result([], 'SELECT * FROM test');
+        $results = $this->createResults([]);
 
-        /** @var Result|object $result */
-        foreach ([$resultStatement, $resultArray] as $result) {
+        foreach ($results as $result) {
             foreach ([null, 'first', 'last', 'reset'] as $methodName) {
                 if ($methodName) {
                     $this->assertSame($result, $result->$methodName());
                 }
+
                 $this->assertFalse($result->isModified);
                 $this->assertSame(0, $result->numFields);
                 $this->assertSame(0, $result->numRows);
@@ -42,18 +44,17 @@ class ResultTest extends TestCase
                 $this->assertSame([], $result->row(true));
                 $this->assertFalse(isset($result->modifiedKey));
                 $this->assertNull($result->modifiedKey);
+
                 $result->modifiedKey = 'value';
+
                 $this->assertSame(['modifiedKey' => 'value'], $result->row());
-                $this->assertSame(['modifiedKey' => 'value'], $result->row(false));
                 $this->assertSame(['value'], $result->row(true));
                 $this->assertTrue(isset($result->modifiedKey));
                 $this->assertSame('value', $result->modifiedKey);
             }
         }
 
-        $this->expectNotice();
-
-        $resultStatement->fetchField();
+        $this->assertSame(0, $results[1]->count());
     }
 
     public function testSingleRow(): void
@@ -62,11 +63,9 @@ class ResultTest extends TestCase
             ['field' => 'value1'],
         ];
 
-        $resultStatement = new Result(new DoctrineArrayStatement($data), 'SELECT * FROM test');
-        $resultArray = new Result($data, 'SELECT * FROM test');
+        $results = $this->createResults($data);
 
-        /** @var Result|object $result */
-        foreach ([$resultStatement, $resultArray] as $result) {
+        foreach ($results as $result) {
             $this->assertFalse($result->isModified);
             $this->assertSame(1, $result->numFields);
             $this->assertSame(1, $result->numRows);
@@ -92,12 +91,15 @@ class ResultTest extends TestCase
             $this->assertSame(['field' => 'new value'], $result->row());
             $this->assertSame(['new value'], $result->row(true));
             $this->assertSame('value1', $result->fetchField());
-            $this->assertSame('value1', $result->fetchField(0));
+            $this->assertSame('value1', $result->fetchField());
         }
 
-        $this->expectNotice();
+        $this->assertSame('value1', $results[1]->fetchField());
 
-        $result->fetchField(1);
+        $this->expectException(\OutOfBoundsException::class);
+        $this->expectExceptionMessage('The result does not contain any data at offset 1.');
+
+        $results[1]->fetchField(1);
     }
 
     public function testMultipleRows(): void
@@ -107,11 +109,9 @@ class ResultTest extends TestCase
             ['field' => 'value2'],
         ];
 
-        $resultStatement = new Result(new DoctrineArrayStatement($data), 'SELECT * FROM test');
-        $resultArray = new Result($data, 'SELECT * FROM test');
+        $results = $this->createResults($data);
 
-        /** @var Result|object $result */
-        foreach ([$resultStatement, $resultArray] as $result) {
+        foreach ($results as $result) {
             $this->assertFalse($result->isModified);
             $this->assertSame(1, $result->numFields);
             $this->assertSame(2, $result->numRows);
@@ -141,12 +141,15 @@ class ResultTest extends TestCase
             $this->assertSame(['field' => 'new value'], $result->row());
             $this->assertSame(['new value'], $result->row(true));
             $this->assertSame('value2', $result->fetchField());
-            $this->assertSame('value2', $result->fetchField(0));
+            $this->assertSame('value2', $result->fetchField());
         }
 
-        $this->expectNotice();
+        $this->assertSame('value2', $results[1]->fetchField());
 
-        $result->fetchField(1);
+        $this->expectException(\OutOfBoundsException::class);
+        $this->expectExceptionMessage('The result does not contain any data at offset 1.');
+
+        $results[1]->fetchField(1);
     }
 
     public function testFetchRowAndAssoc(): void
@@ -156,11 +159,9 @@ class ResultTest extends TestCase
             ['field' => 'value2'],
         ];
 
-        $resultStatement = new Result(new DoctrineArrayStatement($data), 'SELECT * FROM test');
-        $resultArray = new Result($data, 'SELECT * FROM test');
+        $results = $this->createResults($data);
 
-        /** @var Result|object $result */
-        foreach ([$resultStatement, $resultArray] as $result) {
+        foreach ($results as $result) {
             $this->assertSame(['field' => 'value1'], $result->fetchAssoc());
             $this->assertSame(['field' => 'value1'], $result->row());
             $this->assertSame('value1', $result->field);
@@ -173,21 +174,49 @@ class ResultTest extends TestCase
         }
     }
 
-    /**
-     * @dataProvider getInvalidStatements
-     */
-    public function testInvalidStatements($statement): void
+    public function testResultStatementInterface(): void
+    {
+        $resultStatement = $this->createMock(DoctrineResult::class);
+        $resultStatement
+            ->expects($this->exactly(3))
+            ->method('fetchAssociative')
+            ->willReturnOnConsecutiveCalls(['field' => 'value1'], ['field' => 'value2'], false)
+        ;
+
+        $result = new Result($resultStatement, 'SELECT * FROM test');
+
+        $this->assertSame(2, $result->count());
+    }
+
+    #[DataProvider('getInvalidStatements')]
+    public function testInvalidStatements(array|object|string $statement): void
     {
         $this->expectException('InvalidArgumentException');
 
         new Result($statement, 'SELECT * FROM test');
     }
 
-    public function getInvalidStatements(): \Generator
+    public static function getInvalidStatements(): iterable
     {
         yield 'String' => ['foo'];
         yield 'Object' => [new \stdClass()];
         yield 'Single Array' => [['foo' => 'bar']];
         yield 'Mixed Array' => [[['foo' => 'bar'], 'baz']];
+    }
+
+    /**
+     * @param array<array<string, string>> $data
+     *
+     * @return array<Result|object>
+     */
+    private function createResults(array $data): array
+    {
+        return [
+            new Result(
+                new DoctrineResult(new ArrayResult($data), $this->createMock(Connection::class)),
+                'SELECT * FROM test',
+            ),
+            new Result($data, 'SELECT * FROM test'),
+        ];
     }
 }

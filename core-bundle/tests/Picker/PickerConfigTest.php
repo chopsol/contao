@@ -17,10 +17,7 @@ use PHPUnit\Framework\TestCase;
 
 class PickerConfigTest extends TestCase
 {
-    /**
-     * @var PickerConfig
-     */
-    private $config;
+    private PickerConfig $config;
 
     protected function setUp(): void
     {
@@ -76,18 +73,21 @@ class PickerConfigTest extends TestCase
                 'current' => 'alias',
                 'value' => 'foo',
             ],
-            $this->config->jsonSerialize()
+            $this->config->jsonSerialize(),
         );
     }
 
     public function testCreatesAnEncodedJsonString(): void
     {
-        $data = json_encode([
-            'context' => 'link',
-            'extras' => ['fieldType' => 'radio'],
-            'current' => 'alias',
-            'value' => 'foo',
-        ]);
+        $data = json_encode(
+            [
+                'context' => 'link',
+                'extras' => ['fieldType' => 'radio'],
+                'current' => 'alias',
+                'value' => 'foo',
+            ],
+            JSON_THROW_ON_ERROR,
+        );
 
         if (\function_exists('gzencode') && false !== ($encoded = @gzencode($data))) {
             $data = $encoded;
@@ -98,12 +98,15 @@ class PickerConfigTest extends TestCase
 
     public function testDecodesAnEncodedJsonString(): void
     {
-        $data = json_encode([
-            'context' => 'link',
-            'extras' => ['fieldType' => 'radio'],
-            'current' => 'alias',
-            'value' => 'foo',
-        ]);
+        $data = json_encode(
+            [
+                'context' => 'link',
+                'extras' => ['fieldType' => 'radio'],
+                'current' => 'alias',
+                'value' => 'foo',
+            ],
+            JSON_THROW_ON_ERROR,
+        );
 
         if (\function_exists('gzencode') && false !== ($encoded = @gzencode($data))) {
             $data = $encoded;

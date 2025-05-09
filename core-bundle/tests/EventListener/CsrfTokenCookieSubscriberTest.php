@@ -14,13 +14,16 @@ namespace Contao\CoreBundle\Tests\EventListener;
 
 use Contao\CoreBundle\Csrf\MemoryTokenStorage;
 use Contao\CoreBundle\EventListener\CsrfTokenCookieSubscriber;
-use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
-use Symfony\Component\HttpFoundation\ParameterBag;
+use Symfony\Component\HttpFoundation\InputBag;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\Session\Session;
+use Symfony\Component\HttpFoundation\Session\Storage\MockArraySessionStorage;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\Event\ResponseEvent;
+use Symfony\Component\HttpKernel\HttpKernelInterface;
+use Symfony\Component\HttpKernel\Kernel;
 use Symfony\Component\Security\Csrf\TokenGenerator\UriSafeTokenGenerator;
 
 class CsrfTokenCookieSubscriberTest extends TestCase
@@ -28,16 +31,14 @@ class CsrfTokenCookieSubscriberTest extends TestCase
     public function testInitializesTheStorage(): void
     {
         $token = (new UriSafeTokenGenerator())->generateToken();
+        $request = Request::create('https://foobar.com');
 
-        $bag = new ParameterBag([
+        $request->cookies = new InputBag([
             'csrf_foo' => 'bar',
             'csrf_generated' => $token,
             'not_csrf' => 'baz',
             'csrf_bar' => '"<>!&', // ignore invalid characters
         ]);
-
-        $request = Request::create('https://foobar.com');
-        $request->cookies = $bag;
 
         $tokenStorage = $this->createMock(MemoryTokenStorage::class);
         $tokenStorage
@@ -57,7 +58,7 @@ class CsrfTokenCookieSubscriberTest extends TestCase
     {
         $requestEvent = $this->createMock(RequestEvent::class);
         $requestEvent
-            ->method('isMasterRequest')
+            ->method('isMainRequest')
             ->willReturn(false)
         ;
 
@@ -73,12 +74,8 @@ class CsrfTokenCookieSubscriberTest extends TestCase
 
     public function testAddsTheTokenCookiesToTheResponse(): void
     {
-        $bag = new ParameterBag([
-            'unrelated-cookie' => 'to-activate-csrf',
-        ]);
-
         $request = Request::create('https://foobar.com');
-        $request->cookies = $bag;
+        $request->cookies = new InputBag(['unrelated-cookie' => 'to-activate-csrf']);
 
         $tokenStorage = $this->createMock(MemoryTokenStorage::class);
         $tokenStorage
@@ -107,15 +104,37 @@ class CsrfTokenCookieSubscriberTest extends TestCase
         $this->assertSame('lax', $cookie->getSameSite());
     }
 
+    public function testDoesNotAddTheTokenCookiesToTheResponseIfAllCookiesAreDeleted(): void
+    {
+        $request = Request::create('https://foobar.com');
+        $request->cookies = new InputBag(['unrelated-cookie' => 'to-activate-csrf']);
+
+        $tokenStorage = $this->createMock(MemoryTokenStorage::class);
+        $tokenStorage
+            ->expects($this->never())
+            ->method('getUsedTokens')
+        ;
+
+        $response = new Response();
+        $response->headers->clearCookie('unrelated-cookie');
+
+        $listener = new CsrfTokenCookieSubscriber($tokenStorage);
+        $listener->onKernelResponse($this->getResponseEvent($request, $response));
+
+        $cookies = $response->headers->getCookies();
+
+        $this->assertCount(1, $cookies);
+        $this->assertSame('unrelated-cookie', $cookies[0]->getName());
+        $this->assertTrue($cookies[0]->isCleared());
+    }
+
     public function testDoesNotAddTheTokenCookiesToTheResponseIfTheyAlreadyExist(): void
     {
-        $bag = new ParameterBag([
+        $request = Request::create('https://foobar.com');
+        $request->cookies = new InputBag([
             'csrf_foo' => 'bar',
             'unrelated-cookie' => 'to-activate-csrf',
         ]);
-
-        $request = Request::create('https://foobar.com');
-        $request->cookies = $bag;
 
         $tokenStorage = $this->createMock(MemoryTokenStorage::class);
         $tokenStorage
@@ -132,32 +151,64 @@ class CsrfTokenCookieSubscriberTest extends TestCase
         $this->assertCount(0, $response->headers->getCookies());
     }
 
-    public function testRemovesTheTokenCookiesAndReplacesTokenOccurrencesIfNoOtherCookiesArePresent(): void
+    public function testDoesNotAddTheTokenCookiesIfTheSessionWasStartedButClearedAgain(): void
     {
-        $bag = new ParameterBag([
-            'csrf_foo' => 'bar',
-        ]);
+        $session = new Session(new MockArraySessionStorage());
+        $session->set('foobar', 'foobaz'); // This starts the session
+        $session->remove('foobar'); // This removes the value but the session remains started
 
         $request = Request::create('https://foobar.com');
-        $request->cookies = $bag;
+        $request->setSession($session);
 
-        $tokenStorage = new MemoryTokenStorage();
-        $tokenStorage->initialize(['tokenName' => 'tokenValue']);
-        $tokenStorage->getToken('tokenName');
+        $tokenStorage = $this->createMock(MemoryTokenStorage::class);
+        $tokenStorage
+            ->expects($this->never())
+            ->method('getUsedTokens')
+        ;
 
-        $response = new Response(
-            '<html><body><form><input name="REQUEST_TOKEN" value="tokenValue"></form></body></html>',
-            200,
-            ['Content-Type' => 'text/html']
-        );
+        $response = new Response();
 
         $listener = new CsrfTokenCookieSubscriber($tokenStorage);
         $listener->onKernelResponse($this->getResponseEvent($request, $response));
 
-        $this->assertSame(
-            '<html><body><form><input name="REQUEST_TOKEN" value=""></form></body></html>',
-            $response->getContent()
+        $this->assertCount(0, $response->headers->getCookies());
+    }
+
+    public function testDoesNotAddTheTokenCookiesToTheResponseIfTheTokenCheckHasBeenDisabled(): void
+    {
+        $request = Request::create('https://foobar.com');
+        $request->cookies = new InputBag(['unrelated-cookie' => 'to-activate-csrf']);
+        $request->attributes->set('_token_check', false);
+
+        $tokenStorage = $this->createMock(MemoryTokenStorage::class);
+        $tokenStorage
+            ->expects($this->never())
+            ->method('getUsedTokens')
+        ;
+
+        $response = new Response();
+
+        $listener = new CsrfTokenCookieSubscriber($tokenStorage);
+        $listener->onKernelResponse($this->getResponseEvent($request, $response));
+
+        $this->assertCount(0, $response->headers->getCookies());
+    }
+
+    public function testRemovesTheTokenCookiesIfNoOtherCookiesArePresent(): void
+    {
+        $request = Request::create('https://foobar.com');
+        $request->cookies = new InputBag(['csrf_foo' => 'bar']);
+
+        $tokenStorage = new MemoryTokenStorage();
+        $tokenStorage->initialize(['tokenName' => 'tokenValue']);
+
+        $response = new Response('',
+            200,
+            ['Content-Type' => 'text/html', 'Content-Length' => 1234],
         );
+
+        $listener = new CsrfTokenCookieSubscriber($tokenStorage);
+        $listener->onKernelResponse($this->getResponseEvent($request, $response));
 
         $cookies = $response->headers->getCookies();
 
@@ -176,87 +227,42 @@ class CsrfTokenCookieSubscriberTest extends TestCase
 
     public function testDoesNotAddTheTokenCookiesToTheResponseUponSubrequests(): void
     {
-        $responseEvent = $this->createMock(ResponseEvent::class);
-        $responseEvent
-            ->method('isMasterRequest')
-            ->willReturn(false)
-        ;
-
-        $responseEvent
-            ->expects($this->never())
-            ->method('getRequest')
-        ;
-
         $tokenStorage = $this->createMock(MemoryTokenStorage::class);
         $tokenStorage
             ->expects($this->never())
             ->method('getUsedTokens')
         ;
 
+        $responseEvent = new ResponseEvent(
+            $this->createMock(Kernel::class),
+            new Request(),
+            HttpKernelInterface::MAIN_REQUEST,
+            new Response(),
+        );
+
         $listener = new CsrfTokenCookieSubscriber($tokenStorage);
         $listener->onKernelResponse($responseEvent);
     }
 
-    public function testDoesNotReplaceTheTokenOccurrencesIfNotAHtmlDocument(): void
+    public function getRequestEvent(Request|null $request = null): RequestEvent
     {
-        $request = Request::create('https://foobar.com');
+        if (!$request) {
+            $request = new Request();
+        }
 
-        $tokenStorage = new MemoryTokenStorage();
-        $tokenStorage->initialize(['tokenName' => 'tokenValue']);
-        $tokenStorage->getToken('tokenName');
-
-        $response = new Response(
-            'value="tokenValue"',
-            200,
-            ['Content-Type' => 'application/octet-stream']
-        );
-
-        $listener = new CsrfTokenCookieSubscriber($tokenStorage);
-        $listener->onKernelResponse($this->getResponseEvent($request, $response));
-
-        $this->assertSame('value="tokenValue"', $response->getContent());
+        return new RequestEvent($this->createMock(Kernel::class), $request, HttpKernelInterface::MAIN_REQUEST);
     }
 
-    /**
-     * @return RequestEvent&MockObject
-     */
-    public function getRequestEvent(Request $request = null): RequestEvent
+    public function getResponseEvent(Request|null $request = null, Response|null $response = null): ResponseEvent
     {
-        $event = $this->createMock(RequestEvent::class);
-        $event
-            ->method('isMasterRequest')
-            ->willReturn(true)
-        ;
+        if (!$request) {
+            $request = new Request();
+        }
 
-        $event
-            ->method('getRequest')
-            ->willReturn($request)
-        ;
+        if (!$response) {
+            $response = new Response();
+        }
 
-        return $event;
-    }
-
-    /**
-     * @return ResponseEvent&MockObject
-     */
-    public function getResponseEvent(Request $request = null, Response $response = null): ResponseEvent
-    {
-        $event = $this->createMock(ResponseEvent::class);
-        $event
-            ->method('isMasterRequest')
-            ->willReturn(true)
-        ;
-
-        $event
-            ->method('getRequest')
-            ->willReturn($request)
-        ;
-
-        $event
-            ->method('getResponse')
-            ->willReturn($response)
-        ;
-
-        return $event;
+        return new ResponseEvent($this->createMock(Kernel::class), $request, HttpKernelInterface::MAIN_REQUEST, $response);
     }
 }

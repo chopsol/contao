@@ -30,7 +30,7 @@ class AddCronJobsPassTest extends TestCase
         $container = $this->createMock(ContainerBuilder::class);
         $container
             ->method('hasDefinition')
-            ->with(Cron::class)
+            ->with('contao.cron')
             ->willReturn(false)
         ;
 
@@ -50,7 +50,7 @@ class AddCronJobsPassTest extends TestCase
         $pass = new AddCronJobsPass();
         $pass->process($container);
 
-        $definition = $container->getDefinition(Cron::class);
+        $definition = $container->getDefinition('contao.cron');
 
         $this->assertEmpty($definition->getMethodCalls());
     }
@@ -113,8 +113,6 @@ class AddCronJobsPassTest extends TestCase
         $pass->process($container);
 
         $crons = $this->getCronsFromDefinition($container);
-
-        /** @var Definition $definition */
         $definition = $crons[0][0];
 
         $this->assertSame('onMinutely', $definition->getArgument(2));
@@ -132,8 +130,6 @@ class AddCronJobsPassTest extends TestCase
         $pass->process($container);
 
         $crons = $this->getCronsFromDefinition($container);
-
-        /** @var Definition $definition */
         $definition = $crons[0][0];
 
         $this->assertNull($definition->getArgument(2));
@@ -143,13 +139,10 @@ class AddCronJobsPassTest extends TestCase
     {
         $definition = new Definition(TestCronJob::class);
 
-        $definition->addTag(
-            'contao.cronjob',
-            [
-                'interval' => 'minutely',
-                'method' => 'customMethod',
-            ]
-        );
+        $definition->addTag('contao.cronjob', [
+            'interval' => 'minutely',
+            'method' => 'customMethod',
+        ]);
 
         $container = $this->getContainerBuilder();
         $container->setDefinition(TestCronJob::class, $definition);
@@ -158,8 +151,6 @@ class AddCronJobsPassTest extends TestCase
         $pass->process($container);
 
         $crons = $this->getCronsFromDefinition($container);
-
-        /** @var Definition $definition */
         $definition = $crons[0][0];
 
         $this->assertSame('customMethod', $definition->getArgument(2));
@@ -181,8 +172,6 @@ class AddCronJobsPassTest extends TestCase
         $pass->process($container);
 
         $crons = $this->getCronsFromDefinition($container);
-
-        /** @var array<Definition> $definitions */
         $definitions = array_column($crons, 0);
 
         $this->assertCount(5, $crons);
@@ -193,28 +182,82 @@ class AddCronJobsPassTest extends TestCase
         $this->assertSame('@monthly', $definitions[4]->getArgument(1));
     }
 
+    public function testAddingTheSameClassWithDifferentServiceIdsHasDifferentNames(): void
+    {
+        $definition = new Definition(TestCronJob::class);
+        $definition->addTag('contao.cronjob', ['interval' => 'minutely']);
+
+        $container = $this->getContainerBuilder();
+        $container->setDefinition('app.cronjobs.configuration_1', $definition);
+        $container->setDefinition('app.cronjobs.configuration_2', $definition);
+        $container->setDefinition('app.cronjobs.configuration_3', $definition);
+
+        $pass = new AddCronJobsPass();
+        $pass->process($container);
+
+        $crons = $this->getCronsFromDefinition($container);
+
+        /** @var array<Definition> $definitions */
+        $definitions = array_column($crons, 0);
+
+        $this->assertCount(3, $crons);
+        $this->assertSame('* * * * *', $definitions[0]->getArgument(1));
+        $this->assertSame('* * * * *', $definitions[1]->getArgument(1));
+        $this->assertSame('* * * * *', $definitions[2]->getArgument(1));
+        $this->assertSame('app.cronjobs.configuration_1', $definitions[0]->getArgument(3));
+        $this->assertSame('app.cronjobs.configuration_2', $definitions[1]->getArgument(3));
+        $this->assertSame('app.cronjobs.configuration_3', $definitions[2]->getArgument(3));
+    }
+
+    public function testAddsPromiseReturningCronjobsFirst(): void
+    {
+        $definition1 = new Definition(TestCronJob::class);
+        $definition1->addTag('contao.cronjob', ['interval' => 'minutely']);
+
+        $definition2 = new Definition(TestCronJob::class);
+        $definition2->addTag('contao.cronjob', ['interval' => 'minutely', 'method' => 'asyncMethod']);
+
+        $definition3 = new Definition(TestCronJob::class);
+        $definition3->addTag('contao.cronjob', ['interval' => 'minutely']);
+
+        $container = $this->getContainerBuilder();
+        $container->setDefinition('cron-1', $definition1);
+        $container->setDefinition('cron-2', $definition2);
+        $container->setDefinition('cron-3', $definition3);
+
+        $pass = new AddCronJobsPass();
+        $pass->process($container);
+
+        $crons = $this->getCronsFromDefinition($container);
+        $serviceIds = [];
+
+        foreach ($crons as $definition) {
+            $serviceIds[] = (string) $definition[0]->getArguments()[0];
+        }
+
+        $this->assertSame(['cron-2', 'cron-1', 'cron-3'], $serviceIds);
+    }
+
     /**
-     * Returns the container builder with a dummy Cron definition.
+     * Returns the container builder with a dummy contao.cron definition.
      */
     private function getContainerBuilder(): ContainerBuilder
     {
         $container = new ContainerBuilder();
-        $container->setDefinition(Cron::class, new Definition(Cron::class, []));
+        $container->setDefinition('contao.cron', new Definition(Cron::class, []));
 
         return $container;
     }
 
     /**
-     * @return array<int,array<int,Reference|string>>
+     * @return array<int, array<int, Definition|string>>
      */
     private function getCronsFromDefinition(ContainerBuilder $container): array
     {
-        $this->assertTrue($container->hasDefinition(Cron::class));
+        $this->assertTrue($container->hasDefinition('contao.cron'));
 
-        $definition = $container->getDefinition(Cron::class);
+        $definition = $container->getDefinition('contao.cron');
         $methodCalls = $definition->getMethodCalls();
-
-        $this->assertIsArray($methodCalls);
 
         $crons = [];
 

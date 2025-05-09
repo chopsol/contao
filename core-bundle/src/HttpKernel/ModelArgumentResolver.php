@@ -12,59 +12,49 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\HttpKernel;
 
+use Contao\CoreBundle\Framework\Adapter;
 use Contao\CoreBundle\Framework\ContaoFramework;
 use Contao\CoreBundle\Routing\ScopeMatcher;
 use Contao\Model;
 use Symfony\Component\HttpFoundation\Request;
-use Symfony\Component\HttpKernel\Controller\ArgumentValueResolverInterface;
+use Symfony\Component\HttpKernel\Controller\ValueResolverInterface;
 use Symfony\Component\HttpKernel\ControllerMetadata\ArgumentMetadata;
 
-class ModelArgumentResolver implements ArgumentValueResolverInterface
+class ModelArgumentResolver implements ValueResolverInterface
 {
     /**
-     * @var ContaoFramework
+     * @internal
      */
-    private $framework;
-
-    /**
-     * @var ScopeMatcher
-     */
-    private $scopeMatcher;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.model_argument_resolver" service instead
-     */
-    public function __construct(ContaoFramework $framework, ScopeMatcher $scopeMatcher)
-    {
-        $this->framework = $framework;
-        $this->scopeMatcher = $scopeMatcher;
+    public function __construct(
+        private readonly ContaoFramework $framework,
+        private readonly ScopeMatcher $scopeMatcher,
+    ) {
     }
 
-    public function supports(Request $request, ArgumentMetadata $argument): bool
+    public function resolve(Request $request, ArgumentMetadata $argument): array
     {
         if (!$this->scopeMatcher->isContaoRequest($request)) {
-            return false;
+            return [];
         }
 
         $this->framework->initialize();
 
         if (!is_a($argument->getType(), Model::class, true)) {
-            return false;
+            return [];
         }
 
-        if (!$argument->isNullable() && null === $this->fetchModel($request, $argument)) {
-            return false;
+        if (!$argument->isNullable() && !$this->fetchModel($request, $argument)) {
+            return [];
         }
 
-        return true;
+        if (!$model = $this->fetchModel($request, $argument)) {
+            return [];
+        }
+
+        return [$model];
     }
 
-    public function resolve(Request $request, ArgumentMetadata $argument): \Generator
-    {
-        yield $this->fetchModel($request, $argument);
-    }
-
-    private function fetchModel(Request $request, ArgumentMetadata $argument): ?Model
+    private function fetchModel(Request $request, ArgumentMetadata $argument): Model|null
     {
         $name = $this->getArgumentName($request, $argument);
 
@@ -72,23 +62,26 @@ class ModelArgumentResolver implements ArgumentValueResolverInterface
             return null;
         }
 
-        $value = $request->attributes->get($name);
+        /** @var class-string<Model> $type */
         $type = $argument->getType();
+
+        /** @var Model|int $value */
+        $value = $request->attributes->get($name);
 
         if ($type && $value instanceof $type) {
             return $value;
         }
 
-        /** @var Model $model */
-        $model = $this->framework->getAdapter($argument->getType());
+        /** @var Adapter<Model> $model */
+        $model = $this->framework->getAdapter($type);
 
-        return $model->findByPk((int) $value);
+        return $model->findById((int) $value);
     }
 
     /**
      * Returns the argument name from the model class.
      */
-    private function getArgumentName(Request $request, ArgumentMetadata $argument): ?string
+    private function getArgumentName(Request $request, ArgumentMetadata $argument): string|null
     {
         if ($request->attributes->has($argument->getName())) {
             return $argument->getName();

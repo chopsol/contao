@@ -19,25 +19,13 @@ use Symfony\Component\Yaml\Yaml;
 
 class ManagerConfigTest extends ContaoTestCase
 {
-    /**
-     * @var Filesystem
-     */
-    private $filesystem;
+    private Filesystem $filesystem;
 
-    /**
-     * @var string
-     */
-    private $tempdir;
+    private string $tempdir;
 
-    /**
-     * @var string
-     */
-    private $tempfile;
+    private string $tempfile;
 
-    /**
-     * @var ManagerConfig
-     */
-    private $config;
+    private ManagerConfig $config;
 
     protected function setUp(): void
     {
@@ -45,7 +33,7 @@ class ManagerConfigTest extends ContaoTestCase
 
         $this->filesystem = new Filesystem();
         $this->tempdir = $this->getTempDir();
-        $this->tempfile = $this->tempdir.'/config/contao-manager.yml';
+        $this->tempfile = $this->tempdir.'/config/contao-manager.yaml';
         $this->config = new ManagerConfig($this->tempdir);
     }
 

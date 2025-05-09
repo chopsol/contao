@@ -16,11 +16,14 @@ use Contao\CoreBundle\Routing\Page\ContentCompositionInterface;
 use Contao\CoreBundle\Routing\Page\DynamicRouteInterface;
 use Contao\CoreBundle\Routing\Page\PageRoute;
 use Contao\PageModel;
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\Response;
 
-class TestPageController implements DynamicRouteInterface, ContentCompositionInterface
+class TestPageController extends AbstractController implements DynamicRouteInterface, ContentCompositionInterface
 {
-    public function __invoke(): void
+    public function __invoke(): Response
     {
+        return new Response();
     }
 
     public function supportsContentComposition(PageModel $pageModel): bool

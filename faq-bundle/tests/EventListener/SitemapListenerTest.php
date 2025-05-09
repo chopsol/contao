@@ -1,0 +1,126 @@
+<?php
+
+declare(strict_types=1);
+
+/*
+ * This file is part of Contao.
+ *
+ * (c) Leo Feyer
+ *
+ * @license LGPL-3.0-or-later
+ */
+
+namespace Contao\FaqBundle\Tests\EventListener;
+
+use Contao\CoreBundle\Event\SitemapEvent;
+use Contao\CoreBundle\Routing\ContentUrlGenerator;
+use Contao\CoreBundle\Security\ContaoCorePermissions;
+use Contao\Database;
+use Contao\FaqBundle\EventListener\SitemapListener;
+use Contao\FaqCategoryModel;
+use Contao\FaqModel;
+use Contao\PageModel;
+use Contao\TestCase\ContaoTestCase;
+use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+
+class SitemapListenerTest extends ContaoTestCase
+{
+    protected function tearDown(): void
+    {
+        unset($GLOBALS['TL_CONFIG']);
+
+        parent::tearDown();
+    }
+
+    public function testNothingIsAddedIfNoPublishedCategory(): void
+    {
+        $adapters = [
+            FaqCategoryModel::class => $this->mockConfiguredAdapter(['findAll' => null]),
+        ];
+
+        $sitemapEvent = $this->createSitemapEvent([]);
+        $listener = $this->createListener([], $adapters);
+        $listener($sitemapEvent);
+
+        $this->assertStringNotContainsString('<url><loc>', (string) $sitemapEvent->getDocument()->saveXML());
+    }
+
+    public function testFaqEntryIsAdded(): void
+    {
+        $jumpToPage = $this->mockClassWithProperties(PageModel::class, [
+            'published' => 1,
+            'protected' => 1,
+            'groups' => [1],
+        ]);
+
+        $faqModel = $this->mockClassWithProperties(FaqModel::class);
+
+        $urlGenerator = $this->createMock(ContentUrlGenerator::class);
+        $urlGenerator
+            ->expects($this->once())
+            ->method('generate')
+            ->with($faqModel, [], UrlGeneratorInterface::ABSOLUTE_URL)
+            ->willReturn('https://contao.org')
+        ;
+
+        $adapters = [
+            FaqCategoryModel::class => $this->mockConfiguredAdapter([
+                'findAll' => [
+                    $this->mockClassWithProperties(FaqCategoryModel::class, ['jumpTo' => 42]),
+                ],
+            ]),
+            PageModel::class => $this->mockConfiguredAdapter([
+                'findWithDetails' => $jumpToPage,
+            ]),
+            FaqModel::class => $this->mockConfiguredAdapter([
+                'findPublishedByPid' => [$faqModel],
+            ]),
+        ];
+
+        $sitemapEvent = $this->createSitemapEvent([1]);
+        $listener = $this->createListener([1, 42], $adapters, $urlGenerator);
+        $listener($sitemapEvent);
+
+        $this->assertStringContainsString('<url><loc>https://contao.org</loc></url>', (string) $sitemapEvent->getDocument()->saveXML());
+    }
+
+    private function createListener(array $allPages, array $adapters, ContentUrlGenerator|null $urlGenerator = null): SitemapListener
+    {
+        $database = $this->createMock(Database::class);
+        $database
+            ->method('getChildRecords')
+            ->willReturn($allPages)
+        ;
+
+        $instances = [
+            Database::class => $database,
+        ];
+
+        $framework = $this->mockContaoFramework($adapters, $instances);
+        $security = $this->createMock(Security::class);
+
+        if ([] !== $allPages) {
+            $security
+                ->expects($this->once())
+                ->method('isGranted')
+                ->with(ContaoCorePermissions::MEMBER_IN_GROUPS, [1])
+                ->willReturn(true)
+            ;
+        }
+
+        $urlGenerator ??= $this->createMock(ContentUrlGenerator::class);
+
+        return new SitemapListener($framework, $security, $urlGenerator);
+    }
+
+    private function createSitemapEvent(array $rootPages): SitemapEvent
+    {
+        $sitemap = new \DOMDocument('1.0', 'UTF-8');
+        $urlSet = $sitemap->createElementNS('https://www.sitemaps.org/schemas/sitemap/0.9', 'urlset');
+        $sitemap->appendChild($urlSet);
+
+        return new SitemapEvent($sitemap, new Request(), $rootPages);
+    }
+}

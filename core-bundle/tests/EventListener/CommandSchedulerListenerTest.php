@@ -12,15 +12,12 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\EventListener;
 
-use Contao\Config;
 use Contao\CoreBundle\Cron\Cron;
 use Contao\CoreBundle\EventListener\CommandSchedulerListener;
-use Contao\CoreBundle\Framework\ContaoFramework;
 use Contao\CoreBundle\Tests\TestCase;
 use Doctrine\DBAL\Connection;
-use Doctrine\DBAL\Driver\Mysqli\MysqliException;
 use Doctrine\DBAL\Exception\DriverException;
-use Doctrine\DBAL\Schema\MySqlSchemaManager;
+use Doctrine\DBAL\Schema\MySQLSchemaManager;
 use PHPUnit\Framework\MockObject\MockObject;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -29,137 +26,83 @@ use Symfony\Component\HttpKernel\KernelInterface;
 
 class CommandSchedulerListenerTest extends TestCase
 {
-    public function testRunsTheCommandScheduler(): void
+    public function testRunsTheCommandSchedulerIfAutoModeIsDisabled(): void
     {
         $cron = $this->createMock(Cron::class);
+        $cron
+            ->expects($this->never())
+            ->method('hasMinutelyCliCron')
+        ;
+
         $cron
             ->expects($this->once())
             ->method('run')
             ->with(Cron::SCOPE_WEB)
         ;
 
-        $listener = new CommandSchedulerListener($this->mockContaoFramework(), $this->mockConnection(), $cron);
+        $listener = new CommandSchedulerListener($cron, $this->mockConnection());
         $listener($this->getTerminateEvent('contao_frontend'));
     }
 
-    public function testDoesNotRunTheCommandSchedulerIfTheContaoFrameworkIsNotInitialized(): void
+    public function testRunsTheCommandSchedulerIfAutoModeIsEnabledAndCronDoesNotExist(): void
     {
-        $framework = $this->createMock(ContaoFramework::class);
-        $framework
-            ->method('isInitialized')
+        $cron = $this->createMock(Cron::class);
+        $cron
+            ->expects($this->once())
+            ->method('hasMinutelyCliCron')
             ->willReturn(false)
         ;
 
-        $framework
-            ->expects($this->never())
-            ->method('getAdapter')
+        $cron
+            ->expects($this->once())
+            ->method('run')
+            ->with(Cron::SCOPE_WEB)
         ;
 
-        $listener = new CommandSchedulerListener($framework, $this->mockConnection(), $this->createMock(Cron::class));
-        $listener($this->getTerminateEvent('contao_backend'));
+        $listener = new CommandSchedulerListener($cron, $this->mockConnection(), '_fragment', true);
+        $listener($this->getTerminateEvent('contao_frontend'));
     }
 
-    public function testDoesNotRunTheCommandSchedulerInTheInstallTool(): void
+    public function testDoesNotRunTheCommandSchedulerIfAutoModeIsEnabledAndCronExists(): void
     {
-        $framework = $this->mockContaoFramework();
-        $framework
-            ->expects($this->never())
-            ->method('getAdapter')
+        $cron = $this->createMock(Cron::class);
+        $cron
+            ->expects($this->once())
+            ->method('hasMinutelyCliCron')
+            ->willReturn(true)
         ;
 
-        $ref = new \ReflectionClass(Request::class);
+        $cron
+            ->expects($this->never())
+            ->method('run')
+        ;
 
-        /** @var Request $request */
-        $request = $ref->newInstance();
-
-        $pathInfo = $ref->getProperty('pathInfo');
-        $pathInfo->setAccessible(true);
-        $pathInfo->setValue($request, '/contao/install');
-
-        $event = new TerminateEvent($this->createMock(KernelInterface::class), $request, new Response());
-
-        $listener = new CommandSchedulerListener($framework, $this->mockConnection(), $this->createMock(Cron::class));
-        $listener($event);
+        $listener = new CommandSchedulerListener($cron, $this->mockConnection(), '_fragment', true);
+        $listener($this->getTerminateEvent('contao_frontend'));
     }
 
     public function testDoesNotRunTheCommandSchedulerUponFragmentRequests(): void
     {
-        $framework = $this->mockContaoFramework();
-        $framework
+        $cron = $this->createMock(Cron::class);
+        $cron
             ->expects($this->never())
-            ->method('getAdapter')
+            ->method('run')
         ;
 
         $ref = new \ReflectionClass(Request::class);
-
-        /** @var Request $request */
         $request = $ref->newInstance();
 
         $pathInfo = $ref->getProperty('pathInfo');
-        $pathInfo->setAccessible(true);
         $pathInfo->setValue($request, '/foo/_fragment/bar');
 
         $event = new TerminateEvent($this->createMock(KernelInterface::class), $request, new Response());
 
-        $listener = new CommandSchedulerListener($framework, $this->mockConnection(), $this->createMock(Cron::class));
+        $listener = new CommandSchedulerListener($cron, $this->mockConnection());
         $listener($event);
-    }
-
-    public function testDoesNotRunTheCommandSchedulerIfTheInstallationIsIncomplete(): void
-    {
-        $adapter = $this->mockAdapter(['isComplete', 'get']);
-        $adapter
-            ->method('isComplete')
-            ->willReturn(false)
-        ;
-
-        $adapter
-            ->expects($this->never())
-            ->method('get')
-        ;
-
-        $framework = $this->mockContaoFramework([Config::class => $adapter]);
-        $framework
-            ->expects($this->never())
-            ->method('createInstance')
-        ;
-
-        $listener = new CommandSchedulerListener($framework, $this->mockConnection(), $this->createMock(Cron::class));
-        $listener($this->getTerminateEvent('contao_backend'));
-    }
-
-    public function testDoesNotRunTheCommandSchedulerIfCronjobsAreDisabled(): void
-    {
-        $adapter = $this->mockAdapter(['isComplete', 'get']);
-        $adapter
-            ->method('isComplete')
-            ->willReturn(true)
-        ;
-
-        $adapter
-            ->method('get')
-            ->with('disableCron')
-            ->willReturn(true)
-        ;
-
-        $framework = $this->mockContaoFramework([Config::class => $adapter]);
-        $framework
-            ->expects($this->never())
-            ->method('createInstance')
-        ;
-
-        $listener = new CommandSchedulerListener($framework, $this->mockConnection(), $this->createMock(Cron::class));
-        $listener($this->getTerminateEvent('contao_frontend'));
     }
 
     public function testDoesNotRunTheCommandSchedulerIfThereIsADatabaseConnectionError(): void
     {
-        $framework = $this->mockContaoFramework();
-        $framework
-            ->expects($this->once())
-            ->method('getAdapter')
-        ;
-
         $cron = $this->createMock(Cron::class);
         $cron
             ->expects($this->never())
@@ -169,19 +112,16 @@ class CommandSchedulerListenerTest extends TestCase
         $connection = $this->createMock(Connection::class);
         $connection
             ->method('isConnected')
-            ->willThrowException(new DriverException('Could not connect', new MysqliException('Invalid password')))
+            ->willThrowException($this->createMock(DriverException::class))
         ;
 
-        $listener = new CommandSchedulerListener($framework, $connection, $cron);
+        $listener = new CommandSchedulerListener($cron, $connection);
         $listener($this->getTerminateEvent('contao_backend'));
     }
 
-    /**
-     * @return Connection&MockObject
-     */
-    private function mockConnection()
+    private function mockConnection(): Connection&MockObject
     {
-        $schemaManager = $this->createMock(MySqlSchemaManager::class);
+        $schemaManager = $this->createMock(MySQLSchemaManager::class);
         $schemaManager
             ->method('tablesExist')
             ->willReturn(true)
@@ -194,14 +134,14 @@ class CommandSchedulerListenerTest extends TestCase
         ;
 
         $connection
-            ->method('getSchemaManager')
+            ->method('createSchemaManager')
             ->willReturn($schemaManager)
         ;
 
         return $connection;
     }
 
-    private function getTerminateEvent(string $route = null): TerminateEvent
+    private function getTerminateEvent(string|null $route = null): TerminateEvent
     {
         $request = new Request();
 

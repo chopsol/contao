@@ -29,61 +29,41 @@ class PictureFactory implements PictureFactoryInterface
 {
     private const ASPECT_RATIO_THRESHOLD = 0.05;
 
-    /**
-     * @var array
-     */
-    private $imageSizeItemsCache = [];
+    private const FORMATS_ORDER = [
+        'jxl' => 1,
+        'avif' => 2,
+        'heic' => 3,
+        'webp' => 4,
+        'png' => 5,
+        'jpg' => 6,
+        'jpeg' => 7,
+        'gif' => 8,
+    ];
+
+    private array $imageSizeItemsCache = [];
+
+    private string $defaultDensities = '';
+
+    private array $predefinedSizes = [];
+
+    private array $preserveMetadataFields;
 
     /**
-     * @var PictureGeneratorInterface
+     * @internal
      */
-    private $pictureGenerator;
-
-    /**
-     * @var ImageFactoryInterface
-     */
-    private $imageFactory;
-
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    /**
-     * @var bool
-     */
-    private $bypassCache;
-
-    /**
-     * @var array
-     */
-    private $imagineOptions;
-
-    /**
-     * @var string
-     */
-    private $defaultDensities = '';
-
-    /**
-     * @var array
-     */
-    private $predefinedSizes = [];
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.image.picture_factory" service instead
-     */
-    public function __construct(PictureGeneratorInterface $pictureGenerator, ImageFactoryInterface $imageFactory, ContaoFramework $framework, bool $bypassCache, array $imagineOptions)
-    {
-        $this->pictureGenerator = $pictureGenerator;
-        $this->imageFactory = $imageFactory;
-        $this->framework = $framework;
-        $this->bypassCache = $bypassCache;
-        $this->imagineOptions = $imagineOptions;
+    public function __construct(
+        private readonly PictureGeneratorInterface $pictureGenerator,
+        private readonly ImageFactoryInterface $imageFactory,
+        private readonly ContaoFramework $framework,
+        private readonly bool $bypassCache,
+        private readonly array $imagineOptions,
+    ) {
+        $this->preserveMetadataFields = (new ResizeOptions())->getPreserveCopyrightMetadata();
     }
 
-    public function setDefaultDensities($densities): self
+    public function setDefaultDensities(string $densities): static
     {
-        $this->defaultDensities = (string) $densities;
+        $this->defaultDensities = $densities;
 
         return $this;
     }
@@ -96,7 +76,12 @@ class PictureFactory implements PictureFactoryInterface
         $this->predefinedSizes = $predefinedSizes;
     }
 
-    public function create($path, $size = null, ResizeOptions $options = null): PictureInterface
+    public function setPreserveMetadataFields(array $preserveMetadataFields): void
+    {
+        $this->preserveMetadataFields = $preserveMetadataFields;
+    }
+
+    public function create(ImageInterface|string $path, PictureConfiguration|array|int|string|null $size = null, ResizeOptions|null $options = null): PictureInterface
     {
         $attributes = [];
 
@@ -116,19 +101,23 @@ class PictureFactory implements PictureFactoryInterface
             && !isset($this->predefinedSizes[$size[2]])
             && 1 === substr_count($size[2], '_')
         ) {
+            trigger_deprecation('contao/core-bundle', '5.0', 'Using the legacy resize mode "%s" has been deprecated and will no longer work in Contao 6.', $size[2]);
+
             $image->setImportantPart($this->imageFactory->getImportantPartFromLegacyMode($image, $size[2]));
             $size[2] = ResizeConfiguration::MODE_CROP;
         }
 
         if ($size instanceof PictureConfiguration) {
             $config = $size;
+
+            $configOptions = new ResizeOptions();
+            $configOptions->setPreserveCopyrightMetadata($this->preserveMetadataFields);
         } else {
-            [$config, $attributes, $options] = $this->createConfig($size);
+            [$config, $attributes, $configOptions] = $this->createConfig($size);
         }
 
-        if (null === $options) {
-            $options = new ResizeOptions();
-        }
+        // Always prefer options passed to this function
+        $options ??= $configOptions;
 
         if (!$options->getImagineOptions()) {
             $options->setImagineOptions($this->imagineOptions);
@@ -146,48 +135,87 @@ class PictureFactory implements PictureFactoryInterface
     /**
      * Creates a picture configuration.
      *
-     * @param int|array|null $size
-     *
-     * @psalm-return array{0:PictureConfiguration, 1:array<string, string>, 2:ResizeOptions}
+     * @return array{0: PictureConfiguration, 1: array<string, string>, 2: ResizeOptions}
      */
-    private function createConfig($size): array
+    private function createConfig(array|int|string|null $size): array
     {
         if (!\is_array($size)) {
             $size = [0, 0, $size];
         }
 
         $options = new ResizeOptions();
+        $options->setPreserveCopyrightMetadata($this->preserveMetadataFields);
+
         $config = new PictureConfiguration();
         $attributes = [];
 
         if (isset($size[2])) {
             // Database record
             if (is_numeric($size[2])) {
-                /** @var ImageSizeModel $imageSizeModel */
                 $imageSizeModel = $this->framework->getAdapter(ImageSizeModel::class);
-                $imageSizes = $imageSizeModel->findByPk($size[2]);
+                $imageSizes = $imageSizeModel->findById($size[2]);
 
-                $config->setSize($this->createConfigItem(null !== $imageSizes ? $imageSizes->row() : null));
+                $config->setSize($this->createConfigItem($imageSizes?->row()));
 
-                if (null !== $imageSizes) {
+                if ($imageSizes) {
                     $options->setSkipIfDimensionsMatch((bool) $imageSizes->skipIfDimensionsMatch);
 
-                    $config->setFormats(array_merge(
-                        [],
-                        ...array_map(
-                            static function ($formatsString) {
-                                $formats = [];
+                    if ('delete' === $imageSizes->preserveMetadata) {
+                        $options->setPreserveCopyrightMetadata([]);
+                    } elseif (
+                        'overwrite' === $imageSizes->preserveMetadata
+                        && ($metadataFields = StringUtil::deserialize($imageSizes->preserveMetadataFields, true))
+                    ) {
+                        $options->setPreserveCopyrightMetadata(
+                            array_merge_recursive(
+                                ...array_map(
+                                    static fn ($metadata) => StringUtil::deserialize($metadata, true),
+                                    $metadataFields,
+                                ),
+                            ),
+                        );
+                    }
 
-                                foreach (explode(';', $formatsString) as $format) {
-                                    [$source, $targets] = explode(':', $format, 2);
-                                    $formats[$source] = explode(',', $targets);
-                                }
+                    if ($quality = max(0, min(100, (int) $imageSizes->imageQuality))) {
+                        $options->setImagineOptions([
+                            ...$this->imagineOptions,
+                            'quality' => $quality,
+                            'jpeg_quality' => $quality,
+                            'webp_quality' => $quality,
+                            'avif_quality' => $quality,
+                            'heic_quality' => $quality,
+                            'jxl_quality' => $quality,
+                        ]);
 
-                                return $formats;
-                            },
-                            StringUtil::deserialize($imageSizes->formats, true)
-                        )
-                    ));
+                        if (100 === $quality) {
+                            $options->setImagineOptions([
+                                ...$options->getImagineOptions(),
+                                'webp_lossless' => true,
+                                'avif_lossless' => true,
+                                'heic_lossless' => true,
+                                'jxl_lossless' => true,
+                            ]);
+                        }
+                    }
+
+                    $formats = [];
+
+                    if ('' !== $imageSizes->formats) {
+                        $formatsString = implode(';', StringUtil::deserialize($imageSizes->formats, true));
+
+                        foreach (explode(';', $formatsString) as $format) {
+                            [$source, $targets] = explode(':', $format, 2);
+
+                            $formats[$source] = array_unique([...($formats[$source] ?? []), ...explode(',', $targets)]);
+
+                            usort(
+                                $formats[$source],
+                                static fn ($a, $b) => (self::FORMATS_ORDER[$a] ?? $a) <=> (self::FORMATS_ORDER[$b] ?? $b),
+                            );
+                        }
+                    }
+
+                    $config->setFormats($formats);
                 }
 
                 if ($imageSizes) {
@@ -201,7 +229,6 @@ class PictureFactory implements PictureFactoryInterface
                 }
 
                 if (!\array_key_exists($size[2], $this->imageSizeItemsCache)) {
-                    /** @var ImageSizeItemModel $adapter */
                     $adapter = $this->framework->getAdapter(ImageSizeItemModel::class);
                     $this->imageSizeItemsCache[$size[2]] = $adapter->findVisibleByPid($size[2], ['order' => 'sorting ASC']);
                 }
@@ -212,7 +239,6 @@ class PictureFactory implements PictureFactoryInterface
                 if (null !== $imageSizeItems) {
                     $configItems = [];
 
-                    /** @var ImageSizeItemModel $imageSizeItem */
                     foreach ($imageSizeItems as $imageSizeItem) {
                         $configItems[] = $this->createConfigItem($imageSizeItem->row());
                     }
@@ -230,6 +256,18 @@ class PictureFactory implements PictureFactoryInterface
                 $config->setSize($this->createConfigItem($imageSizes));
                 $config->setFormats($imageSizes['formats'] ?? []);
                 $options->setSkipIfDimensionsMatch($imageSizes['skipIfDimensionsMatch'] ?? false);
+
+                $options->setPreserveCopyrightMetadata([
+                    ...$options->getPreserveCopyrightMetadata(),
+                    ...$imageSizes['preserveMetadataFields'] ?? [],
+                ]);
+
+                if (!empty($imageSizes['imagineOptions'])) {
+                    $options->setImagineOptions([
+                        ...$this->imagineOptions,
+                        ...$imageSizes['imagineOptions'],
+                    ]);
+                }
 
                 if (!empty($imageSizes['cssClass'])) {
                     $attributes['class'] = $imageSizes['cssClass'];
@@ -286,39 +324,39 @@ class PictureFactory implements PictureFactoryInterface
     /**
      * Creates a picture configuration item.
      */
-    private function createConfigItem(array $imageSize = null): PictureConfigurationItem
+    private function createConfigItem(array|null $imageSize = null): PictureConfigurationItem
     {
         $configItem = new PictureConfigurationItem();
         $resizeConfig = new ResizeConfiguration();
 
         if (null !== $imageSize) {
-            if (isset($imageSize['width'])) {
+            if (!empty($imageSize['width'])) {
                 $resizeConfig->setWidth((int) $imageSize['width']);
             }
 
-            if (isset($imageSize['height'])) {
+            if (!empty($imageSize['height'])) {
                 $resizeConfig->setHeight((int) $imageSize['height']);
             }
 
-            if (isset($imageSize['zoom'])) {
+            if (!empty($imageSize['zoom'])) {
                 $resizeConfig->setZoomLevel((int) $imageSize['zoom']);
             }
 
-            if (isset($imageSize['resizeMode'])) {
+            if (!empty($imageSize['resizeMode'])) {
                 $resizeConfig->setMode((string) $imageSize['resizeMode']);
             }
 
             $configItem->setResizeConfig($resizeConfig);
 
-            if (isset($imageSize['sizes'])) {
+            if (!empty($imageSize['sizes'])) {
                 $configItem->setSizes((string) $imageSize['sizes']);
             }
 
-            if (isset($imageSize['densities'])) {
+            if (!empty($imageSize['densities'])) {
                 $configItem->setDensities((string) $imageSize['densities']);
             }
 
-            if (isset($imageSize['media'])) {
+            if (!empty($imageSize['media'])) {
                 $configItem->setMedia((string) $imageSize['media']);
             }
         }
@@ -328,36 +366,36 @@ class PictureFactory implements PictureFactoryInterface
 
     private function addImageAttributes(PictureInterface $picture, array $attributes): PictureInterface
     {
-        if (empty($attributes)) {
+        if (!$attributes) {
             return $picture;
         }
 
-        $img = $picture->getImg();
+        $img = $picture->getRawImg();
 
         foreach ($attributes as $attribute => $value) {
             $img[$attribute] = $value;
         }
 
-        return new Picture($img, $picture->getSources());
+        return new Picture($img, $picture->getRawSources());
     }
 
     /**
-     * Returns true if the aspect ratios of all sources of the picture are
-     * nearly the same and differ less than the ASPECT_RATIO_THRESHOLD.
+     * Returns true if the aspect ratios of all sources of the picture are nearly the
+     * same and differ less than the ASPECT_RATIO_THRESHOLD.
      */
     private function hasSingleAspectRatio(PictureInterface $picture): bool
     {
-        if (0 === \count($picture->getSources())) {
+        if (!$picture->getRawSources()) {
             return true;
         }
 
-        $img = $picture->getImg();
+        $img = $picture->getRawImg();
 
         if (empty($img['width']) || empty($img['height'])) {
             return false;
         }
 
-        foreach ($picture->getSources() as $source) {
+        foreach ($picture->getRawSources() as $source) {
             if (empty($source['width']) || empty($source['height'])) {
                 return false;
             }

@@ -15,19 +15,21 @@ namespace Contao\CalendarBundle\EventListener;
 use Contao\CalendarEventsModel;
 use Contao\CoreBundle\Event\PreviewUrlConvertEvent;
 use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\Events;
+use Contao\CoreBundle\Routing\ContentUrlGenerator;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 
 /**
  * @internal
  */
+#[AsEventListener]
 class PreviewUrlConvertListener
 {
-    private $framework;
-
-    public function __construct(ContaoFramework $framework)
-    {
-        $this->framework = $framework;
+    public function __construct(
+        private readonly ContaoFramework $framework,
+        private readonly ContentUrlGenerator $urlGenerator,
+    ) {
     }
 
     /**
@@ -39,27 +41,19 @@ class PreviewUrlConvertListener
             return;
         }
 
-        $request = $event->getRequest();
-
-        if (null === $request || null === ($eventModel = $this->getEventModel($request))) {
+        if (!$eventModel = $this->getEventModel($event->getRequest())) {
             return;
         }
 
-        /** @var Events $eventsAdapter */
-        $eventsAdapter = $this->framework->getAdapter(Events::class);
-
-        $event->setUrl($eventsAdapter->generateEventUrl($eventModel, true));
+        $event->setUrl($this->urlGenerator->generate($eventModel, [], UrlGeneratorInterface::ABSOLUTE_URL));
     }
 
-    private function getEventModel(Request $request): ?CalendarEventsModel
+    private function getEventModel(Request $request): CalendarEventsModel|null
     {
         if (!$request->query->has('calendar')) {
             return null;
         }
 
-        /** @var CalendarEventsModel $adapter */
-        $adapter = $this->framework->getAdapter(CalendarEventsModel::class);
-
-        return $adapter->findByPk($request->query->get('calendar'));
+        return $this->framework->getAdapter(CalendarEventsModel::class)->findById($request->query->get('calendar'));
     }
 }

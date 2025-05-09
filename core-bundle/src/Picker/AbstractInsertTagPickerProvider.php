@@ -42,9 +42,21 @@ abstract class AbstractInsertTagPickerProvider extends AbstractPickerProvider
     /**
      * Returns the value without the surrounding insert tag chunks.
      */
-    protected function getInsertTagValue(PickerConfig $config)
+    protected function getInsertTagValue(PickerConfig $config): string
     {
-        return str_replace($this->getInsertTagChunks($config), '', $config->getValue());
+        return explode('|', str_replace($this->getInsertTagChunks($config), '', $config->getValue()), 2)[0];
+    }
+
+    /**
+     * Returns the insert tag flags.
+     */
+    protected function getInsertTagFlags(PickerConfig $config): array
+    {
+        $flags = explode('|', str_replace($this->getInsertTagChunks($config), '', $config->getValue()));
+
+        array_shift($flags);
+
+        return $flags;
     }
 
     /**
@@ -52,6 +64,6 @@ abstract class AbstractInsertTagPickerProvider extends AbstractPickerProvider
      */
     protected function isMatchingInsertTag(PickerConfig $config): bool
     {
-        return false !== strpos($config->getValue(), $this->getInsertTagChunks($config)[0]);
+        return str_contains($config->getValue(), (string) $this->getInsertTagChunks($config)[0]);
     }
 }

@@ -12,28 +12,26 @@ declare(strict_types=1);
 
 namespace Contao\NewsBundle\EventListener;
 
+use Contao\CoreBundle\DependencyInjection\Attribute\AsHook;
 use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\Environment;
+use Contao\CoreBundle\Routing\ContentUrlGenerator;
 use Contao\LayoutModel;
-use Contao\Model\Collection;
-use Contao\NewsFeedModel;
+use Contao\NewsBundle\Controller\Page\NewsFeedController;
 use Contao\PageModel;
 use Contao\StringUtil;
-use Contao\Template;
+use Symfony\Component\Routing\Exception\ExceptionInterface;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 
 /**
  * @internal
  */
+#[AsHook('generatePage')]
 class GeneratePageListener
 {
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    public function __construct(ContaoFramework $framework)
-    {
-        $this->framework = $framework;
+    public function __construct(
+        private readonly ContaoFramework $framework,
+        private readonly ContentUrlGenerator $urlGenerator,
+    ) {
     }
 
     /**
@@ -49,25 +47,27 @@ class GeneratePageListener
 
         $this->framework->initialize();
 
-        /** @var NewsFeedModel $adapter */
-        $adapter = $this->framework->getAdapter(NewsFeedModel::class);
+        $adapter = $this->framework->getAdapter(PageModel::class);
 
-        if (!($feeds = $adapter->findByIds($newsfeeds)) instanceof Collection) {
+        if (!$feeds = $adapter->findMultipleByIds($newsfeeds)) {
             return;
         }
 
-        /** @var Template $template */
-        $template = $this->framework->getAdapter(Template::class);
-
-        /** @var Environment $environment */
-        $environment = $this->framework->getAdapter(Environment::class);
-
         foreach ($feeds as $feed) {
-            $GLOBALS['TL_HEAD'][] = $template->generateFeedTag(
-                sprintf('%sshare/%s.xml', $feed->feedBase ?: $environment->get('base'), $feed->alias),
-                $feed->format,
-                $feed->title
-            );
+            if (NewsFeedController::TYPE !== $feed->type) {
+                continue;
+            }
+
+            try {
+                // TODO: Use ResponseContext, once it supports appending to <head>
+                $GLOBALS['TL_HEAD'][] = $this->generateFeedTag($this->urlGenerator->generate($feed, [], UrlGeneratorInterface::ABSOLUTE_URL), $feed->feedFormat, $feed->title);
+            } catch (ExceptionInterface) {
+            }
         }
+    }
+
+    private function generateFeedTag(string $href, string $format, string $title): string
+    {
+        return \sprintf('<link type="%s" rel="alternate" href="%s" title="%s">', NewsFeedController::$contentTypes[$format], $href, StringUtil::specialchars($title));
     }
 }

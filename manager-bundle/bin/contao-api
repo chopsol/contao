@@ -19,14 +19,19 @@ set_time_limit(0);
 @ini_set('display_errors', '1');
 @ini_set('zlib.output_compression', '0');
 
-if (file_exists(__DIR__.'/../../../../autoload.php')) {
+if (file_exists(__DIR__.'/../autoload.php')) {
+    $projectDir = \dirname(__DIR__, 2);
+} elseif (file_exists(__DIR__.'/../../../autoload.php')) {
+    $projectDir = \dirname(__DIR__, 4);
+} elseif (file_exists(__DIR__.'/../../../../autoload.php')) {
     $projectDir = \dirname(__DIR__, 5);
+} elseif (false !== ($cwd = getcwd()) && file_exists($cwd.'/vendor/autoload.php')) {
+    $projectDir = $cwd;
 } else {
     $projectDir = \dirname(__DIR__, 4);
 }
 
-/** @var Composer\Autoload\ClassLoader $loader */
-$loader = require $projectDir.'/vendor/autoload.php';
+require $projectDir.'/vendor/autoload.php';
 
 $application = new Application($projectDir);
 $application->run();

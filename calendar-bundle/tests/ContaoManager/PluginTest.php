@@ -17,15 +17,13 @@ use Contao\CalendarBundle\ContaoManager\Plugin;
 use Contao\CoreBundle\ContaoCoreBundle;
 use Contao\ManagerPlugin\Bundle\Config\BundleConfig;
 use Contao\ManagerPlugin\Bundle\Parser\ParserInterface;
-use PHPUnit\Framework\TestCase;
+use Contao\TestCase\ContaoTestCase;
 
-class PluginTest extends TestCase
+class PluginTest extends ContaoTestCase
 {
     public function testReturnsTheBundles(): void
     {
         $parser = $this->createMock(ParserInterface::class);
-
-        /** @var BundleConfig $config */
         $config = (new Plugin())->getBundles($parser)[0];
 
         $this->assertInstanceOf(BundleConfig::class, $config);

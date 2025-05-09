@@ -15,65 +15,36 @@ namespace Contao\CoreBundle\Routing\Page;
 final class RouteConfig
 {
     /**
-     * @var string|null
-     */
-    private $path;
-
-    /**
-     * @var string|null
-     */
-    private $pathRegex;
-
-    /**
-     * @var string|null
-     */
-    private $urlSuffix;
-
-    /**
-     * @var array
-     */
-    private $requirements;
-
-    /**
-     * @var array
-     */
-    private $options;
-
-    /**
-     * @var array
-     */
-    private $defaults;
-
-    /**
      * @var array<string>
      */
-    private $methods;
+    private readonly array $methods;
 
     /**
      * @param string|array<string> $methods
      */
-    public function __construct(string $path = null, string $pathRegex = null, string $urlSuffix = null, array $requirements = [], array $options = [], array $defaults = [], $methods = [])
-    {
-        $this->path = $path;
-        $this->pathRegex = $pathRegex;
-        $this->urlSuffix = $urlSuffix;
-        $this->requirements = $requirements;
-        $this->options = $options;
-        $this->defaults = $defaults;
+    public function __construct(
+        private readonly bool|string|null $path = null,
+        private readonly string|null $pathRegex = null,
+        private readonly string|null $urlSuffix = null,
+        private readonly array $requirements = [],
+        private readonly array $options = [],
+        private readonly array $defaults = [],
+        array|string $methods = [],
+    ) {
         $this->methods = \is_array($methods) ? $methods : [$methods];
     }
 
-    public function getPath(): ?string
+    public function getPath(): bool|string|null
     {
         return $this->path;
     }
 
-    public function getPathRegex(): ?string
+    public function getPathRegex(): string|null
     {
         return $this->pathRegex;
     }
 
-    public function getUrlSuffix(): ?string
+    public function getUrlSuffix(): string|null
     {
         return $this->urlSuffix;
     }

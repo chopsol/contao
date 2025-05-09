@@ -12,51 +12,40 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Cron;
 
+use GuzzleHttp\Promise\PromiseInterface;
+
 class CronJob
 {
-    /**
-     * @var object
-     */
-    private $service;
+    private readonly string $name;
 
-    /**
-     * @var string
-     */
-    private $method;
+    private \DateTimeInterface $previousRun;
 
-    /**
-     * @var string
-     */
-    private $interval;
-
-    /**
-     * @var string
-     */
-    private $name;
-
-    public function __construct(object $service, string $interval, string $method = null)
-    {
-        $this->service = $service;
-        $this->method = $method;
-        $this->interval = $interval;
-        $this->name = \get_class($service);
+    public function __construct(
+        private readonly object $service,
+        private readonly string $interval,
+        private readonly string|null $method = null,
+        string|null $name = null,
+    ) {
+        $name ??= $service::class;
 
         if (!\is_callable($service)) {
             if (null === $this->method) {
                 throw new \InvalidArgumentException('Service must be a callable when no method name is defined');
             }
 
-            $this->name .= '::'.$method;
+            $name .= '::'.$method;
         }
+
+        $this->name = $name;
     }
 
-    public function __invoke(string $scope): void
+    public function __invoke(string $scope): PromiseInterface|null
     {
         if (\is_callable($this->service)) {
-            ($this->service)($scope);
-        } else {
-            $this->service->{$this->method}($scope);
+            return ($this->service)($scope);
         }
+
+        return $this->service->{$this->method}($scope);
     }
 
     public function getService(): object
@@ -77,5 +66,17 @@ class CronJob
     public function getName(): string
     {
         return $this->name;
+    }
+
+    public function setPreviousRun(\DateTimeInterface $previousRun): self
+    {
+        $this->previousRun = $previousRun;
+
+        return $this;
+    }
+
+    public function getPreviousRun(): \DateTimeInterface
+    {
+        return $this->previousRun;
     }
 }

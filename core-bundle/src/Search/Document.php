@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Search;
 
+use Contao\ArrayUtil;
 use Nyholm\Psr7\Uri;
 use Psr\Http\Message\UriInterface;
 use Symfony\Component\DomCrawler\Crawler;
@@ -20,45 +21,41 @@ use Symfony\Component\HttpFoundation\Response;
 
 class Document
 {
-    /**
-     * @var UriInterface
-     */
-    private $uri;
+    private Crawler|null $crawler = null;
+
+    private array|null $jsonLds = null;
 
     /**
-     * @var int
-     */
-    private $statusCode;
-
-    /**
-     * The key is the header name in lowercase letters and the value is again
-     * an array of header values.
+     * The key is the header name in lowercase letters and the value is again an array
+     * of header values.
      *
-     * @var array<string,array>
+     * @param array<string, array> $headers
      */
-    private $headers;
-
-    /**
-     * @var string
-     */
-    private $body;
-
-    /**
-     * @var Crawler
-     */
-    private $crawler;
-
-    /**
-     * @var array|null
-     */
-    private $jsonLds;
-
-    public function __construct(UriInterface $uri, int $statusCode, array $headers = [], string $body = '')
-    {
-        $this->uri = $uri;
-        $this->statusCode = $statusCode;
+    public function __construct(
+        private UriInterface $uri,
+        private int $statusCode,
+        private array $headers,
+        private string $body = '',
+    ) {
         $this->headers = array_change_key_case($headers);
-        $this->body = $body;
+    }
+
+    public function __serialize(): array
+    {
+        return [
+            'uri' => $this->uri,
+            'statusCode' => $this->statusCode,
+            'headers' => $this->headers,
+            'body' => $this->body,
+        ];
+    }
+
+    public function __unserialize(array $data): void
+    {
+        $this->uri = $data['uri'];
+        $this->statusCode = $data['statusCode'];
+        $this->headers = $data['headers'];
+        $this->body = $data['body'];
     }
 
     public function getUri(): UriInterface
@@ -83,16 +80,37 @@ class Document
 
     public function getContentCrawler(): Crawler
     {
-        if (null === $this->crawler) {
-            $this->crawler = new Crawler($this->body);
+        return $this->crawler ??= new Crawler($this->body);
+    }
+
+    public function extractCanonicalUri(): UriInterface|null
+    {
+        foreach ($this->getHeaders() as $key => $values) {
+            if ('link' === $key) {
+                foreach ($values as $value) {
+                    if (preg_match('@<(https?://(.+))>;\s*rel="canonical"@', (string) $value, $matches)) {
+                        return new Uri($matches[1]);
+                    }
+                }
+            }
         }
 
-        return $this->crawler;
+        $headCanonical = $this->getContentCrawler()
+            ->filterXPath('//html/head/link[@rel="canonical"][starts-with(@href,"http")]')
+            ->first()
+        ;
+
+        if ($headCanonical->count()) {
+            return new Uri($headCanonical->attr('href'));
+        }
+
+        return null;
     }
 
     /**
-     * Extracts all <script type="application/ld+json"> script tags and returns their contents as a JSON decoded
-     * array. Optionally allows to restrict it to a given context and type.
+     * Extracts all <script type="application/ld+json"> script tags and returns their
+     * contents as a JSON decoded array. Optionally allows to restrict it to a given
+     * context and type.
      */
     public function extractJsonLdScripts(string $context = '', string $type = ''): array
     {
@@ -106,23 +124,37 @@ class Document
             return $this->jsonLds;
         }
 
-        $this->jsonLds = $this->getContentCrawler()
+        $jsonLds = $this->getContentCrawler()
             ->filterXPath('descendant-or-self::script[@type = "application/ld+json"]')
             ->each(
                 static function (Crawler $node) {
-                    $data = json_decode($node->text(), true);
-
-                    if (JSON_ERROR_NONE !== json_last_error()) {
+                    try {
+                        return json_decode($node->text(), true, 512, JSON_THROW_ON_ERROR);
+                    } catch (\JsonException) {
                         return null;
                     }
-
-                    return $data;
-                }
+                },
             )
         ;
 
-        // Filter invalid (null) values
-        $this->jsonLds = array_filter($this->jsonLds);
+        // Filter invalid (null) and parse all values
+        foreach (array_filter($jsonLds) as $jsonLd) {
+            // If array has numeric keys, it likely contains multiple data inside it which
+            // should be treated as if coming from separate sources, and thus moved to the
+            // root of an array.
+            $jsonLdItems = ArrayUtil::isAssoc($jsonLd) ? [$jsonLd] : $jsonLd;
+
+            // Parsed the grouped values under the @graph within the same context
+            foreach ($jsonLdItems as $jsonLdItem) {
+                if (\is_array($graphs = $jsonLdItem['@graph'] ?? null)) {
+                    foreach ($graphs as $graph) {
+                        $this->jsonLds[] = [...array_diff_key($jsonLdItem, ['@graph' => null]), ...$graph];
+                    }
+                } else {
+                    $this->jsonLds[] = $jsonLdItem;
+                }
+            }
+        }
 
         return $this->filterJsonLd($this->jsonLds, $context, $type);
     }
@@ -133,12 +165,16 @@ class Document
             new Uri($request->getUri()),
             $response->getStatusCode(),
             $response->headers->all(),
-            (string) $response->getContent()
+            (string) $response->getContent(),
         );
     }
 
     private function filterJsonLd(array $jsonLds, string $context = '', string $type = ''): array
     {
+        if ('' !== $context) {
+            $context = rtrim($context, '/').'/';
+        }
+
         $matching = [];
 
         foreach ($jsonLds as $data) {
@@ -148,7 +184,7 @@ class Document
                 continue;
             }
 
-            if (\count($filtered = $this->filterJsonLdContexts($data, [$context]))) {
+            if ($filtered = $this->filterJsonLdContexts($data, [$context])) {
                 $matching[] = $filtered;
             }
         }
@@ -163,6 +199,8 @@ class Document
         }
 
         if (\is_string($data['@context'])) {
+            $data['@context'] = rtrim($data['@context'], '/').'/';
+
             foreach ($data as $key => $value) {
                 if ('@type' === $key) {
                     $data[$key] = $data['@context'].$value;
@@ -180,14 +218,14 @@ class Document
 
         if (\is_array($data['@context'])) {
             foreach ($data['@context'] as $prefix => $context) {
-                if (isset($data['@type']) && 0 === strncmp($data['@type'], $prefix.':', \strlen($prefix) + 1)) {
-                    $data['@type'] = $context.substr($data['@type'], \strlen($prefix) + 1);
+                if (isset($data['@type']) && 0 === strncmp($data['@type'], $prefix.':', \strlen((string) $prefix) + 1)) {
+                    $data['@type'] = $context.substr($data['@type'], \strlen((string) $prefix) + 1);
                 }
 
                 foreach ($data as $key => $value) {
-                    if (0 === strncmp($prefix.':', $key, \strlen($prefix) + 1)) {
+                    if (0 === strncmp($prefix.':', $key, \strlen((string) $prefix) + 1)) {
                         unset($data[$key]);
-                        $data[$context.substr($key, \strlen($prefix) + 1)] = $value;
+                        $data[$context.substr($key, \strlen((string) $prefix) + 1)] = $value;
                     }
                 }
             }
@@ -208,15 +246,15 @@ class Document
                 if ('@type' === $key) {
                     $newData[$key] = $value;
 
-                    if (0 === strncmp($value, $context, \strlen($context))) {
-                        $newData[$key] = substr($value, \strlen($context));
+                    if (str_starts_with($value, $context)) {
+                        $newData[$key] = substr($value, \strlen((string) $context));
                         $found = true;
                         break;
                     }
                 }
 
-                if (0 === strncmp($context, $key, \strlen($context))) {
-                    $newData[substr($key, \strlen($context))] = $value;
+                if (0 === strncmp($context, $key, \strlen((string) $context))) {
+                    $newData[substr($key, \strlen((string) $context))] = $value;
                     $found = true;
                     break;
                 }

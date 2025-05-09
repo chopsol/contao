@@ -12,9 +12,9 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\DependencyInjection\Compiler;
 
+use Composer\InstalledVersions;
 use Contao\CoreBundle\DependencyInjection\Compiler\AddAssetsPackagesPass;
 use Contao\CoreBundle\Tests\TestCase;
-use Contao\CoreBundle\Util\PackageUtil;
 use Symfony\Component\Asset\Packages;
 use Symfony\Component\Asset\VersionStrategy\EmptyVersionStrategy;
 use Symfony\Component\Asset\VersionStrategy\JsonManifestVersionStrategy;
@@ -23,13 +23,13 @@ use Symfony\Component\DependencyInjection\ChildDefinition;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\Filesystem\Filesystem;
-use Webmozart\PathUtil\Path;
+use Symfony\Component\Filesystem\Path;
 
 class AddAssetsPackagesPassTest extends TestCase
 {
-    public static function setUpBeforeClass(): void
+    protected function setUp(): void
     {
-        parent::setUpBeforeClass();
+        parent::setUp();
 
         $fs = new Filesystem();
         $fs->mkdir(static::getTempDir().'/FooBarBundle/Resources/public');
@@ -37,6 +37,9 @@ class AddAssetsPackagesPassTest extends TestCase
 
         $fs->mkdir(static::getTempDir().'/ManifestJsonBundle/Resources/public');
         $fs->touch(static::getTempDir().'/ManifestJsonBundle/Resources/public/manifest.json');
+
+        $fs->mkdir(static::getTempDir().'/ThemeBundle/contao/themes/flexible');
+        $fs->touch(static::getTempDir().'/ThemeBundle/contao/themes/flexible/manifest.json');
 
         $fs->mkdir(static::getTempDir().'/RootPublicBundle/public');
     }
@@ -141,7 +144,6 @@ class AddAssetsPackagesPassTest extends TestCase
         $this->assertSame('assets._version_manifest_json', (string) $service->getArgument(1));
         $this->assertTrue($container->hasDefinition('assets._version_manifest_json'));
 
-        /** @var ChildDefinition $definition */
         $definition = $container->getDefinition('assets._version_manifest_json');
 
         $this->assertInstanceOf(ChildDefinition::class, $definition);
@@ -195,15 +197,40 @@ class AddAssetsPackagesPassTest extends TestCase
         $this->assertTrue($container->hasDefinition('assets._version_contao-components/contao'));
         $this->assertFalse($container->hasDefinition('assets._package_contao/image'));
         $this->assertFalse($container->hasDefinition('assets._version_contao/image'));
+        $this->assertTrue($container->hasDefinition('assets._package_scrivo/highlight.php'));
+        $this->assertTrue($container->hasDefinition('assets._version_scrivo/highlight.php'));
 
         $service = $container->getDefinition('assets._package_contao-components/contao');
 
         $this->assertSame('assets._version_contao-components/contao', (string) $service->getArgument(1));
 
-        $expectedVersion = PackageUtil::getVersion('contao-components/contao');
+        $expectedVersion = InstalledVersions::getPrettyVersion('contao-components/contao');
         $actualVersion = $container->getDefinition('assets._version_contao-components/contao')->getArgument(0);
 
         $this->assertSame($expectedVersion, $actualVersion);
+    }
+
+    public function testRegistersTheThemes(): void
+    {
+        $bundlePath = Path::normalize(static::getTempDir()).'/ThemeBundle';
+        $container = $this->getContainerWithAssets('ThemeBundle', 'Foo\Bar\ThemeBundle', $bundlePath);
+
+        $pass = new AddAssetsPackagesPass();
+        $pass->process($container);
+
+        $this->assertTrue($container->hasDefinition('assets._package_system/themes/flexible'));
+
+        $service = $container->getDefinition('assets._package_system/themes/flexible');
+
+        $this->assertSame('system/themes/flexible', $service->getArgument(0));
+        $this->assertSame('assets._version_system/themes/flexible', (string) $service->getArgument(1));
+        $this->assertTrue($container->hasDefinition('assets._version_system/themes/flexible'));
+
+        $definition = $container->getDefinition('assets._version_system/themes/flexible');
+
+        $this->assertInstanceOf(ChildDefinition::class, $definition);
+        $this->assertSame('assets.json_manifest_version_strategy', $definition->getParent());
+        $this->assertSame($bundlePath.'/contao/themes/flexible/manifest.json', $definition->getArgument(0));
     }
 
     private function getContainerWithAssets(string $name, string $class, string $path): ContainerBuilder

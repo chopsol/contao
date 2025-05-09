@@ -14,56 +14,50 @@ namespace Contao\CoreBundle\Routing;
 
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestMatcherInterface;
+use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\HttpKernel\Event\KernelEvent;
 
 class ScopeMatcher
 {
     /**
-     * @var RequestMatcherInterface
+     * @internal
      */
-    private $backendMatcher;
-
-    /**
-     * @var RequestMatcherInterface
-     */
-    private $frontendMatcher;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.routing.scope_matcher" service instead
-     */
-    public function __construct(RequestMatcherInterface $backendMatcher, RequestMatcherInterface $frontendMatcher)
-    {
-        $this->backendMatcher = $backendMatcher;
-        $this->frontendMatcher = $frontendMatcher;
+    public function __construct(
+        private readonly RequestMatcherInterface $backendMatcher,
+        private readonly RequestMatcherInterface $frontendMatcher,
+        private readonly RequestStack $requestStack,
+    ) {
     }
 
-    public function isContaoMasterRequest(KernelEvent $event): bool
+    public function isContaoMainRequest(KernelEvent $event): bool
     {
-        return $event->isMasterRequest() && $this->isContaoRequest($event->getRequest());
+        return $event->isMainRequest() && $this->isContaoRequest($event->getRequest());
     }
 
-    public function isBackendMasterRequest(KernelEvent $event): bool
+    public function isBackendMainRequest(KernelEvent $event): bool
     {
-        return $event->isMasterRequest() && $this->isBackendRequest($event->getRequest());
+        return $event->isMainRequest() && $this->isBackendRequest($event->getRequest());
     }
 
-    public function isFrontendMasterRequest(KernelEvent $event): bool
+    public function isFrontendMainRequest(KernelEvent $event): bool
     {
-        return $event->isMasterRequest() && $this->isFrontendRequest($event->getRequest());
+        return $event->isMainRequest() && $this->isFrontendRequest($event->getRequest());
     }
 
-    public function isContaoRequest(Request $request): bool
+    public function isContaoRequest(Request|null $request = null): bool
     {
+        $request ??= $this->requestStack->getCurrentRequest();
+
         return $this->isBackendRequest($request) || $this->isFrontendRequest($request);
     }
 
-    public function isBackendRequest(Request $request): bool
+    public function isBackendRequest(Request|null $request = null): bool
     {
-        return $this->backendMatcher->matches($request);
+        return $this->backendMatcher->matches($request ?? $this->requestStack->getCurrentRequest());
     }
 
-    public function isFrontendRequest(Request $request): bool
+    public function isFrontendRequest(Request|null $request = null): bool
     {
-        return $this->frontendMatcher->matches($request);
+        return $this->frontendMatcher->matches($request ?? $this->requestStack->getCurrentRequest());
     }
 }

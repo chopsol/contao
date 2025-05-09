@@ -14,33 +14,32 @@ namespace Contao\CalendarBundle\Picker;
 
 use Contao\CalendarEventsModel;
 use Contao\CalendarModel;
+use Contao\CoreBundle\DependencyInjection\Attribute\AsPickerProvider;
 use Contao\CoreBundle\Framework\FrameworkAwareInterface;
 use Contao\CoreBundle\Framework\FrameworkAwareTrait;
 use Contao\CoreBundle\Picker\AbstractInsertTagPickerProvider;
 use Contao\CoreBundle\Picker\DcaPickerProviderInterface;
 use Contao\CoreBundle\Picker\PickerConfig;
 use Knp\Menu\FactoryInterface;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\Routing\RouterInterface;
-use Symfony\Component\Security\Core\Security;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
+#[AsPickerProvider(priority: 96)]
 class EventPickerProvider extends AbstractInsertTagPickerProvider implements DcaPickerProviderInterface, FrameworkAwareInterface
 {
     use FrameworkAwareTrait;
 
     /**
-     * @var Security
+     * @internal
      */
-    private $security;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao_calendar.picker.event_provider" service instead
-     */
-    public function __construct(FactoryInterface $menuFactory, RouterInterface $router, ?TranslatorInterface $translator, Security $security)
-    {
+    public function __construct(
+        FactoryInterface $menuFactory,
+        RouterInterface $router,
+        TranslatorInterface|null $translator,
+        private readonly Security $security,
+    ) {
         parent::__construct($menuFactory, $router, $translator);
-
-        $this->security = $security;
     }
 
     public function getName(): string
@@ -48,7 +47,7 @@ class EventPickerProvider extends AbstractInsertTagPickerProvider implements Dca
         return 'eventPicker';
     }
 
-    public function supportsContext($context): bool
+    public function supportsContext(string $context): bool
     {
         return 'link' === $context && $this->security->isGranted('contao_user.modules', 'calendar');
     }
@@ -58,7 +57,7 @@ class EventPickerProvider extends AbstractInsertTagPickerProvider implements Dca
         return $this->isMatchingInsertTag($config);
     }
 
-    public function getDcaTable(): string
+    public function getDcaTable(PickerConfig|null $config = null): string
     {
         return 'tl_calendar_events';
     }
@@ -67,27 +66,27 @@ class EventPickerProvider extends AbstractInsertTagPickerProvider implements Dca
     {
         $attributes = ['fieldType' => 'radio'];
 
-        if ($source = $config->getExtra('source')) {
-            $attributes['preserveRecord'] = $source;
-        }
-
         if ($this->supportsValue($config)) {
             $attributes['value'] = $this->getInsertTagValue($config);
+
+            if ($flags = $this->getInsertTagFlags($config)) {
+                $attributes['flags'] = $flags;
+            }
         }
 
         return $attributes;
     }
 
-    public function convertDcaValue(PickerConfig $config, $value): string
+    public function convertDcaValue(PickerConfig $config, mixed $value): string
     {
-        return sprintf($this->getInsertTag($config), $value);
+        return \sprintf($this->getInsertTag($config), $value);
     }
 
-    protected function getRouteParameters(PickerConfig $config = null): array
+    protected function getRouteParameters(PickerConfig|null $config = null): array
     {
         $params = ['do' => 'calendar'];
 
-        if (null === $config || !$config->getValue() || !$this->supportsValue($config)) {
+        if (!$config?->getValue() || !$this->supportsValue($config)) {
             return $params;
         }
 
@@ -104,19 +103,15 @@ class EventPickerProvider extends AbstractInsertTagPickerProvider implements Dca
         return '{{event_url::%s}}';
     }
 
-    /**
-     * @param int|string $id
-     */
-    private function getCalendarId($id): ?int
+    private function getCalendarId(int|string $id): int|null
     {
-        /** @var CalendarEventsModel $eventAdapter */
         $eventAdapter = $this->framework->getAdapter(CalendarEventsModel::class);
 
-        if (!($calendarEventsModel = $eventAdapter->findById($id)) instanceof CalendarEventsModel) {
+        if (!$eventsModel = $eventAdapter->findById($id)) {
             return null;
         }
 
-        if (!($calendar = $calendarEventsModel->getRelated('pid')) instanceof CalendarModel) {
+        if (!$calendar = $this->framework->getAdapter(CalendarModel::class)->findById($eventsModel->pid)) {
             return null;
         }
 

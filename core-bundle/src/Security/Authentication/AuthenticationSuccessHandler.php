@@ -14,22 +14,24 @@ namespace Contao\CoreBundle\Security\Authentication;
 
 use Contao\CoreBundle\Framework\ContaoFramework;
 use Contao\CoreBundle\Monolog\ContaoContext;
+use Contao\CoreBundle\Routing\ContentUrlGenerator;
 use Contao\FrontendUser;
 use Contao\PageModel;
 use Contao\StringUtil;
-use Contao\System;
 use Contao\User;
 use Psr\Log\LoggerInterface;
 use Scheb\TwoFactorBundle\Security\Authentication\Token\TwoFactorTokenInterface;
+use Scheb\TwoFactorBundle\Security\Http\Authenticator\TwoFactorAuthenticator;
 use Scheb\TwoFactorBundle\Security\TwoFactor\Trusted\TrustedDeviceManagerInterface;
-use Symfony\Bundle\SecurityBundle\Security\FirewallConfig;
 use Symfony\Bundle\SecurityBundle\Security\FirewallMap;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\UriSigner;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
-use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationSuccessHandlerInterface;
 use Symfony\Component\Security\Http\Util\TargetPathTrait;
 
@@ -37,40 +39,20 @@ class AuthenticationSuccessHandler implements AuthenticationSuccessHandlerInterf
 {
     use TargetPathTrait;
 
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
+    private User|null $user = null;
 
     /**
-     * @var TrustedDeviceManagerInterface
+     * @internal
      */
-    private $trustedDeviceManager;
-
-    /**
-     * @var FirewallMap
-     */
-    private $firewallMap;
-
-    /**
-     * @var LoggerInterface|null
-     */
-    private $logger;
-
-    /**
-     * @var User|UserInterface
-     */
-    private $user;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.security.authentication_success_handler" service instead
-     */
-    public function __construct(ContaoFramework $framework, TrustedDeviceManagerInterface $trustedDeviceManager, FirewallMap $firewallMap, LoggerInterface $logger = null)
-    {
-        $this->framework = $framework;
-        $this->trustedDeviceManager = $trustedDeviceManager;
-        $this->firewallMap = $firewallMap;
-        $this->logger = $logger;
+    public function __construct(
+        private readonly ContaoFramework $framework,
+        private readonly TrustedDeviceManagerInterface $trustedDeviceManager,
+        private readonly FirewallMap $firewallMap,
+        private readonly ContentUrlGenerator $urlGenerator,
+        private readonly UriSigner $uriSigner,
+        private readonly TokenStorageInterface $tokenStorage,
+        private readonly LoggerInterface|null $logger = null,
+    ) {
     }
 
     /**
@@ -88,21 +70,24 @@ class AuthenticationSuccessHandler implements AuthenticationSuccessHandlerInterf
 
         $this->user = $user;
 
-        // Reset login attempts and locked values
-        $this->user->loginAttempts = 0;
-        $this->user->locked = 0;
-
         if ($token instanceof TwoFactorTokenInterface) {
-            $this->user->save();
+            if ($this->uriSigner->checkRequest($request) && $request->query->getBoolean(TwoFactorAuthenticator::FLAG_2FA_COMPLETE)) {
+                $authenticatedToken = $token->getAuthenticatedToken();
+                $authenticatedToken->setAttribute(TwoFactorAuthenticator::FLAG_2FA_COMPLETE, true);
 
-            $response = new RedirectResponse($request->getUri());
+                $this->tokenStorage->setToken($authenticatedToken);
+            } else {
+                $this->user->save();
 
-            // Used by the TwoFactorListener to redirect a user back to the authentication page
-            if ($request->hasSession() && $request->isMethodSafe() && !$request->isXmlHttpRequest()) {
-                $this->saveTargetPath($request->getSession(), $token->getProviderKey(), $request->getUri());
+                $response = new RedirectResponse($request->getUri());
+
+                // Used by the TwoFactorListener to redirect a user back to the authentication page
+                if ($request->hasSession() && $request->isMethodSafe() && !$request->isXmlHttpRequest()) {
+                    $this->saveTargetPath($request->getSession(), $token->getFirewallName(), $request->getUri());
+                }
+
+                return $response;
             }
-
-            return $response;
         }
 
         $this->user->lastLogin = $this->user->currentLogin;
@@ -110,7 +95,6 @@ class AuthenticationSuccessHandler implements AuthenticationSuccessHandlerInterf
         $this->user->save();
 
         if ($request->request->has('trusted')) {
-            /** @var FirewallConfig $firewallConfig */
             $firewallConfig = $this->firewallMap->getFirewallConfig($request);
 
             if (!$this->trustedDeviceManager->isTrustedDevice($user, $firewallConfig->getName())) {
@@ -120,17 +104,13 @@ class AuthenticationSuccessHandler implements AuthenticationSuccessHandlerInterf
 
         $response = new RedirectResponse($this->determineTargetUrl($request));
 
-        if (null !== $this->logger) {
-            $this->logger->info(
-                sprintf('User "%s" has logged in', $this->user->username),
-                ['contao' => new ContaoContext(__METHOD__, ContaoContext::ACCESS, $this->user->username)]
-            );
-        }
+        $this->logger?->info(
+            \sprintf('User "%s" has logged in', $this->user->username),
+            ['contao' => new ContaoContext(__METHOD__, ContaoContext::ACCESS, $this->user->username)],
+        );
 
-        $this->triggerPostLoginHook();
-
-        if ($request->hasSession() && method_exists($token, 'getProviderKey')) {
-            $this->removeTargetPath($request->getSession(), $token->getProviderKey());
+        if ($request->hasSession() && method_exists($token, 'getFirewallName')) {
+            $this->removeTargetPath($request->getSession(), $token->getFirewallName());
         }
 
         return $response;
@@ -142,41 +122,26 @@ class AuthenticationSuccessHandler implements AuthenticationSuccessHandlerInterf
             return $this->decodeTargetPath($request);
         }
 
-        /** @var PageModel $pageModelAdapter */
         $pageModelAdapter = $this->framework->getAdapter(PageModel::class);
         $groups = StringUtil::deserialize($this->user->groups, true);
         $groupPage = $pageModelAdapter->findFirstActiveByMemberGroups($groups);
 
         if ($groupPage instanceof PageModel) {
-            return $groupPage->getAbsoluteUrl();
+            return $this->urlGenerator->generate($groupPage, [], UrlGeneratorInterface::ABSOLUTE_URL);
         }
 
         return $this->decodeTargetPath($request);
-    }
-
-    private function triggerPostLoginHook(): void
-    {
-        $this->framework->initialize();
-
-        if (empty($GLOBALS['TL_HOOKS']['postLogin']) || !\is_array($GLOBALS['TL_HOOKS']['postLogin'])) {
-            return;
-        }
-
-        trigger_deprecation('contao/core-bundle', '4.5', 'Using the "postLogin" hook has been deprecated and will no longer work in Contao 5.0.');
-
-        /** @var System $system */
-        $system = $this->framework->getAdapter(System::class);
-
-        foreach ($GLOBALS['TL_HOOKS']['postLogin'] as $callback) {
-            $system->importStatic($callback[0])->{$callback[1]}($this->user);
-        }
     }
 
     private function decodeTargetPath(Request $request): string
     {
         $targetPath = $request->request->get('_target_path');
 
-        if (null === $targetPath) {
+        if (!\is_string($targetPath) && $this->uriSigner->checkRequest($request)) {
+            $targetPath = $request->query->get('_target_path');
+        }
+
+        if (!\is_string($targetPath)) {
             throw new BadRequestHttpException('Missing form field "_target_path". You probably need to adjust your custom login template.');
         }
 

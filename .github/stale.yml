@@ -7,9 +7,7 @@ exemptLabels:
     - feature
     - up for discussion
     - help wanted
-    - incompatible
-
-staleLabel: stale
+    - BC break
 
 markComment: >
     This issue has been automatically marked as stale because it has not had
@@ -17,3 +15,5 @@ markComment: >
     for your contributions.
 
 closeComment: false
+staleLabel: stale
+exemptAssignees: true

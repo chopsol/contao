@@ -17,9 +17,6 @@ use FOS\HttpCache\SymfonyCache\Events;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\Request;
 
-/**
- * @internal
- */
 class StripQueryParametersSubscriber implements EventSubscriberInterface
 {
     private const DENY_LIST = [
@@ -48,19 +45,10 @@ class StripQueryParametersSubscriber implements EventSubscriberInterface
         'utm_[a-z]+',
     ];
 
-    /**
-     * @var array
-     */
-    private $allowList;
+    private array $removeFromDenyList = [];
 
-    /**
-     * @var array
-     */
-    private $removeFromDenyList = [];
-
-    public function __construct(array $allowList = [])
+    public function __construct(private readonly array $allowList = [])
     {
-        $this->allowList = $allowList;
     }
 
     public function getAllowList(): array
@@ -84,7 +72,7 @@ class StripQueryParametersSubscriber implements EventSubscriberInterface
         }
 
         // Use a custom allow list if present, otherwise use the default deny list
-        if (0 !== \count($this->allowList)) {
+        if ($this->allowList) {
             $this->filterQueryParams($request, $this->allowList);
         } else {
             $this->filterQueryParams($request, $this->removeFromDenyList, self::DENY_LIST);
@@ -103,18 +91,18 @@ class StripQueryParametersSubscriber implements EventSubscriberInterface
         // Remove params that match the deny list or all if no deny list was set
         $removeParams = preg_grep(
             '/^(?:'.implode(')$|^(?:', $denyList ?: ['.*']).')$/i',
-            array_keys($request->query->all())
+            array_keys($request->query->all()),
         );
 
         // Do not remove params that match the allow list
-        $removeParams = preg_grep(
-            '/^(?:'.implode(')$|^(?:', $allowList).')$/i',
-            $removeParams,
-            PREG_GREP_INVERT
-        );
+        $removeParams = preg_grep('/^(?:'.implode(')$|^(?:', $allowList).')$/i', $removeParams, PREG_GREP_INVERT);
 
         foreach ($removeParams as $name) {
             $request->query->remove($name);
         }
+
+        // We also need to adjust the ServerBag, otherwise the cache storage will use the
+        // wrong URI (see #6908)
+        $request->server->set('QUERY_STRING', http_build_query($request->query->all()));
     }
 }

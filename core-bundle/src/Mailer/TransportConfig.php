@@ -14,20 +14,10 @@ namespace Contao\CoreBundle\Mailer;
 
 final class TransportConfig
 {
-    /**
-     * @var string
-     */
-    private $name;
-
-    /**
-     * @var string
-     */
-    private $from;
-
-    public function __construct(string $name, string $from = null)
-    {
-        $this->name = $name;
-        $this->from = $from;
+    public function __construct(
+        private readonly string $name,
+        private readonly string|null $from = null,
+    ) {
     }
 
     public function getName(): string
@@ -35,7 +25,7 @@ final class TransportConfig
         return $this->name;
     }
 
-    public function getFrom(): ?string
+    public function getFrom(): string|null
     {
         return $this->from;
     }

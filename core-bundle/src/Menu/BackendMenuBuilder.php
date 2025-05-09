@@ -21,22 +21,12 @@ use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 class BackendMenuBuilder
 {
     /**
-     * @var FactoryInterface
+     * @internal
      */
-    private $factory;
-
-    /**
-     * @var EventDispatcherInterface
-     */
-    private $eventDispatcher;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.menu.backend_menu_builder" service instead
-     */
-    public function __construct(FactoryInterface $factory, EventDispatcherInterface $eventDispatcher)
-    {
-        $this->factory = $factory;
-        $this->eventDispatcher = $eventDispatcher;
+    public function __construct(
+        private readonly FactoryInterface $factory,
+        private readonly EventDispatcherInterface $eventDispatcher,
+    ) {
     }
 
     public function buildMainMenu(): ItemInterface
@@ -57,6 +47,15 @@ class BackendMenuBuilder
             ->createItem('headerMenu')
             ->setChildrenAttribute('id', 'tmenu')
         ;
+
+        $this->eventDispatcher->dispatch(new MenuEvent($this->factory, $tree), ContaoCoreEvents::BACKEND_MENU_BUILD);
+
+        return $tree;
+    }
+
+    public function buildLoginMenu(): ItemInterface
+    {
+        $tree = $this->factory->createItem('loginMenu');
 
         $this->eventDispatcher->dispatch(new MenuEvent($this->factory, $tree), ContaoCoreEvents::BACKEND_MENU_BUILD);
 

@@ -14,45 +14,33 @@ namespace Contao\CoreBundle\Command;
 
 use Contao\Automator;
 use Contao\CoreBundle\Framework\ContaoFramework;
+use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Helper\QuestionHelper;
+use Symfony\Component\Console\Exception\InvalidArgumentException;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\ChoiceQuestion;
 
 /**
- * Runs Contao automator tasks on the command line.
- *
  * @internal
  */
+#[AsCommand(
+    name: 'contao:automator',
+    description: 'Runs automator tasks on the command line.',
+)]
 class AutomatorCommand extends Command
 {
-    protected static $defaultName = 'contao:automator';
+    private array $commands = [];
 
-    /**
-     * @var array
-     */
-    private $commands = [];
-
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    public function __construct(ContaoFramework $framework)
+    public function __construct(private readonly ContaoFramework $framework)
     {
-        $this->framework = $framework;
-
         parent::__construct();
     }
 
     protected function configure(): void
     {
-        $this
-            ->addArgument('task', InputArgument::OPTIONAL, "The name of the task:\n  - ".implode("\n  - ", $this->getCommands()))
-            ->setDescription('Runs automator tasks on the command line.')
-        ;
+        $this->addArgument('task', InputArgument::OPTIONAL, "The name of the task:\n  - ".implode("\n  - ", $this->getCommands()));
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -61,13 +49,13 @@ class AutomatorCommand extends Command
 
         try {
             $this->runAutomator($input, $output);
-        } catch (\InvalidArgumentException $e) {
-            $output->writeln(sprintf('%s (see help contao:automator).', $e->getMessage()));
+        } catch (InvalidArgumentException $e) {
+            $output->writeln(\sprintf('%s (see help contao:automator).', $e->getMessage()));
 
-            return 1;
+            return Command::FAILURE;
         }
 
-        return 0;
+        return Command::SUCCESS;
     }
 
     private function runAutomator(InputInterface $input, OutputInterface $output): void
@@ -83,7 +71,7 @@ class AutomatorCommand extends Command
      */
     private function getCommands(): array
     {
-        if (empty($this->commands)) {
+        if (!$this->commands) {
             $this->commands = $this->generateCommandMap();
         }
 
@@ -95,8 +83,6 @@ class AutomatorCommand extends Command
      */
     private function generateCommandMap(): array
     {
-        $this->framework->initialize();
-
         $commands = [];
 
         // Find all public methods
@@ -122,7 +108,7 @@ class AutomatorCommand extends Command
 
         if (null !== $task) {
             if (!\in_array($task, $commands, true)) {
-                throw new \InvalidArgumentException(sprintf('Invalid task "%s"', $task)); // no full stop here
+                throw new InvalidArgumentException(\sprintf('Invalid task "%s"', $task)); // no full stop here
             }
 
             return $task;
@@ -131,7 +117,6 @@ class AutomatorCommand extends Command
         $question = new ChoiceQuestion('Please select a task:', $commands);
         $question->setMaxAttempts(1);
 
-        /** @var QuestionHelper $helper */
         $helper = $this->getHelper('question');
 
         return $helper->ask($input, $output, $question);

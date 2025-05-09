@@ -14,35 +14,41 @@ namespace Contao\CoreBundle\Tests\Controller;
 
 use Contao\BackendUser;
 use Contao\CoreBundle\Controller\BackendPreviewSwitchController;
+use Contao\CoreBundle\Csrf\ContaoCsrfTokenManager;
 use Contao\CoreBundle\Security\Authentication\FrontendPreviewAuthenticator;
 use Contao\CoreBundle\Security\Authentication\Token\TokenChecker;
+use Contao\CoreBundle\Security\ContaoCorePermissions;
 use Contao\CoreBundle\Tests\TestCase;
+use Contao\FrontendUser;
+use Contao\User;
 use Doctrine\DBAL\Connection;
-use Doctrine\DBAL\Driver\ResultStatement;
+use Doctrine\DBAL\Platforms\MySQLPlatform;
+use Doctrine\DBAL\Result;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\MockObject\MockObject;
+use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\HttpFoundation\InputBag;
 use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\HttpFoundation\ParameterBag;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\RouterInterface;
-use Symfony\Component\Security\Core\Security;
-use Symfony\Component\Security\Csrf\CsrfToken;
-use Symfony\Component\Security\Csrf\CsrfTokenManagerInterface;
+use Symfony\Contracts\Translation\TranslatorInterface;
 use Twig\Environment;
+use Twig\Loader\LoaderInterface;
 
 class BackendPreviewSwitchControllerTest extends TestCase
 {
     public function testExitsOnNonAjaxRequest(): void
     {
         $controller = new BackendPreviewSwitchController(
-            $this->createMock(FrontendPreviewAuthenticator::class),
+            $this->mockFrontendPreviewAuthenticator(),
             $this->mockTokenChecker(),
-            $this->mockConnection(),
+            $this->createMock(Connection::class),
             $this->mockSecurity(),
             $this->getTwigMock(),
             $this->mockRouter(),
             $this->mockTokenManager(),
-            'csrf'
+            $this->mockTranslator(),
         );
 
         $request = $this->createMock(Request::class);
@@ -56,17 +62,31 @@ class BackendPreviewSwitchControllerTest extends TestCase
         $this->assertSame(Response::HTTP_BAD_REQUEST, $response->getStatusCode());
     }
 
-    public function testRendersToolbar(): void
+    #[DataProvider('providePreviewToolbarTemplateScenarios')]
+    public function testRendersToolbar(bool $legacyTemplateExists, string $expectedTemplate): void
     {
+        $loader = $this->createMock(LoaderInterface::class);
+        $loader
+            ->method('exists')
+            ->with('@ContaoCore/Frontend/preview_toolbar_base.html.twig')
+            ->willReturn($legacyTemplateExists)
+        ;
+
+        $twig = $this->getTwigMock();
+        $twig
+            ->method('getLoader')
+            ->willReturn($loader)
+        ;
+
         $controller = new BackendPreviewSwitchController(
-            $this->createMock(FrontendPreviewAuthenticator::class),
+            $this->mockFrontendPreviewAuthenticator(),
             $this->mockTokenChecker(),
-            $this->mockConnection(),
+            $this->createMock(Connection::class),
             $this->mockSecurity(),
-            $this->getTwigMock(),
+            $twig,
             $this->mockRouter(),
             $this->mockTokenManager(),
-            'csrf'
+            $this->mockTranslator(),
         );
 
         $request = $this->createMock(Request::class);
@@ -84,25 +104,30 @@ class BackendPreviewSwitchControllerTest extends TestCase
         $response = $controller($request);
 
         $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
-        $this->assertSame('CONTAO', $response->getContent());
+        $this->assertSame($expectedTemplate, $response->getContent());
     }
 
-    public function testProcessesAuthentication(): void
+    public static function providePreviewToolbarTemplateScenarios(): iterable
+    {
+        yield 'legacy template' => [true, '@ContaoCore/Frontend/preview_toolbar_base.html.twig'];
+
+        yield 'modern template' => [false, '@Contao/frontend_preview/toolbar.html.twig'];
+    }
+
+    public function testAddsShareLinkToToolbar(): void
     {
         $controller = new BackendPreviewSwitchController(
-            $this->createMock(FrontendPreviewAuthenticator::class),
+            $this->mockFrontendPreviewAuthenticator(),
             $this->mockTokenChecker(),
-            $this->mockConnection(),
-            $this->mockSecurity(),
+            $this->createMock(Connection::class),
+            $this->mockSecurity(true),
             $this->getTwigMock(),
-            $this->mockRouter(),
+            $this->mockRouter(true),
             $this->mockTokenManager(),
-            'csrf'
+            $this->mockTranslator(),
         );
 
         $request = $this->createMock(Request::class);
-        $request->request = new ParameterBag(['FORM_SUBMIT' => 'tl_switch']);
-
         $request
             ->method('isXmlHttpRequest')
             ->willReturn(true)
@@ -111,29 +136,72 @@ class BackendPreviewSwitchControllerTest extends TestCase
         $request
             ->method('isMethod')
             ->with('GET')
-            ->willReturn(false)
+            ->willReturn(true)
         ;
+
+        $controller($request);
+    }
+
+    #[DataProvider('getAuthenticationScenarios')]
+    public function testProcessesAuthentication(string|null $username, string $authenticateMethod): void
+    {
+        $frontendPreviewAuthenticator = $this->createMock(FrontendPreviewAuthenticator::class);
+        $frontendPreviewAuthenticator
+            ->expects($this->once())
+            ->method($authenticateMethod)
+            ->willReturn(true)
+        ;
+
+        $controller = new BackendPreviewSwitchController(
+            $frontendPreviewAuthenticator,
+            $this->mockTokenChecker($username),
+            $this->createMock(Connection::class),
+            $this->mockSecurity(),
+            $this->getTwigMock(),
+            $this->mockRouter(),
+            $this->mockTokenManager(),
+            $this->mockTranslator(),
+        );
+
+        $request = new Request(
+            [],
+            [
+                'FORM_SUBMIT' => 'tl_switch',
+                'user' => $username,
+            ],
+            [],
+            [],
+            [],
+            ['HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest', 'REQUEST_METHOD' => 'POST'],
+        );
 
         $response = $controller($request);
 
         $this->assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode());
     }
 
-    public function testReturnsEmptyMemberList(): void
+    public static function getAuthenticationScenarios(): iterable
+    {
+        yield [null, 'authenticateFrontendGuest'];
+        yield ['', 'authenticateFrontendGuest'];
+        yield ['k.jones', 'authenticateFrontendUser'];
+    }
+
+    public function testReturnsErrorWithInvalidUsername(): void
     {
         $controller = new BackendPreviewSwitchController(
-            $this->createMock(FrontendPreviewAuthenticator::class),
+            $this->mockFrontendPreviewAuthenticator(),
             $this->mockTokenChecker(),
-            $this->mockConnection([]),
+            $this->createMock(Connection::class),
             $this->mockSecurity(),
             $this->getTwigMock(),
             $this->mockRouter(),
             $this->mockTokenManager(),
-            'csrf'
+            $this->mockTranslator(),
         );
 
         $request = $this->createMock(Request::class);
-        $request->request = new ParameterBag(['FORM_SUBMIT' => 'datalist_members']);
+        $request->request = new InputBag(['FORM_SUBMIT' => 'tl_switch', 'user' => 'foobar']);
 
         $request
             ->method('isXmlHttpRequest')
@@ -148,30 +216,133 @@ class BackendPreviewSwitchControllerTest extends TestCase
 
         $response = $controller($request);
 
-        $this->assertInstanceOf(JsonResponse::class, $response);
-        $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
-        $this->assertSame(json_encode([]), $response->getContent());
+        $this->assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+        $this->assertSame('ERR.previewSwitchInvalidUsername', $response->getContent());
     }
 
-    /**
-     * @return RouterInterface&MockObject
-     */
-    private function mockRouter(): RouterInterface
+    public function testReturnsEmptyMemberList(): void
+    {
+        $resultStatement = $this->createMock(Result::class);
+        $resultStatement
+            ->method('fetchFirstColumn')
+            ->willReturn([])
+        ;
+
+        $connection = $this->createMock(Connection::class);
+        $connection
+            ->method('executeQuery')
+            ->willReturn($resultStatement)
+        ;
+
+        $connection
+            ->method('getDatabasePlatform')
+            ->willReturn(new MySQLPlatform())
+        ;
+
+        $controller = new BackendPreviewSwitchController(
+            $this->mockFrontendPreviewAuthenticator(),
+            $this->mockTokenChecker(),
+            $connection,
+            $this->mockSecurity(),
+            $this->getTwigMock(),
+            $this->mockRouter(),
+            $this->mockTokenManager(),
+            $this->mockTranslator(),
+        );
+
+        $request = new Request(
+            [],
+            ['FORM_SUBMIT' => 'datalist_members', 'value' => 'mem'],
+            [],
+            [],
+            [],
+            ['HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest', 'REQUEST_METHOD' => 'POST'],
+        );
+
+        $response = $controller($request);
+
+        $this->assertInstanceOf(JsonResponse::class, $response);
+        $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
+        $this->assertSame(json_encode([], JSON_THROW_ON_ERROR), $response->getContent());
+    }
+
+    public function testExitsAsUnauthenticatedUser(): void
+    {
+        $controller = new BackendPreviewSwitchController(
+            $this->mockFrontendPreviewAuthenticator(),
+            $this->mockTokenChecker(),
+            $this->createMock(Connection::class),
+            $this->mockSecurity(false, null, []),
+            $this->getTwigMock(),
+            $this->mockRouter(),
+            $this->mockTokenManager(),
+            $this->mockTranslator(),
+        );
+
+        $request = $this->createMock(Request::class);
+        $request
+            ->method('isXmlHttpRequest')
+            ->willReturn(true)
+        ;
+
+        $response = $controller($request);
+
+        $this->assertSame(Response::HTTP_BAD_REQUEST, $response->getStatusCode());
+    }
+
+    public function testExitsAsUnauthorizedUser(): void
+    {
+        $controller = new BackendPreviewSwitchController(
+            $this->mockFrontendPreviewAuthenticator(),
+            $this->mockTokenChecker(),
+            $this->createMock(Connection::class),
+            $this->mockSecurity(false, FrontendUser::class, ['IS_AUTHENTICATED_FULLY', 'ROLE_MEMBER']),
+            $this->getTwigMock(),
+            $this->mockRouter(),
+            $this->mockTokenManager(),
+            $this->mockTranslator(),
+        );
+
+        $request = $this->createMock(Request::class);
+        $request
+            ->method('isXmlHttpRequest')
+            ->willReturn(true)
+        ;
+
+        $response = $controller($request);
+
+        $this->assertSame(Response::HTTP_BAD_REQUEST, $response->getStatusCode());
+    }
+
+    private function mockRouter(bool $canShare = false): RouterInterface&MockObject
     {
         $router = $this->createMock(RouterInterface::class);
-        $router
-            ->method('generate')
-            ->with('contao_backend_switch')
-            ->willReturn('/contao/preview_switch')
-        ;
+
+        if ($canShare) {
+            $router
+                ->expects($this->exactly(2))
+                ->method('generate')
+                ->willReturnMap([
+                    [
+                        'contao_backend',
+                        ['do' => 'preview_link', 'act' => 'create', 'showUnpublished' => true, 'rt' => 'csrf', 'nb' => '1'],
+                        '/_contao/preview/1',
+                    ],
+                    ['contao_backend_switch', '/contao/preview_switch'],
+                ])
+            ;
+        } else {
+            $router
+                ->method('generate')
+                ->with('contao_backend_switch')
+                ->willReturn('/contao/preview_switch')
+            ;
+        }
 
         return $router;
     }
 
-    /**
-     * @return TokenChecker&MockObject
-     */
-    private function mockTokenChecker(?string $frontendUsername = null, bool $previewMode = true): TokenChecker
+    private function mockTokenChecker(string|null $frontendUsername = null): TokenChecker&MockObject
     {
         $tokenChecker = $this->createMock(TokenChecker::class);
         $tokenChecker
@@ -181,18 +352,22 @@ class BackendPreviewSwitchControllerTest extends TestCase
 
         $tokenChecker
             ->method('isPreviewMode')
-            ->willReturn($previewMode)
+            ->willReturn(true)
         ;
 
         return $tokenChecker;
     }
 
     /**
-     * @return Security&MockObject
+     * @param class-string<User> $userClass
      */
-    private function mockSecurity(): Security
+    private function mockSecurity(bool $canShare = false, string|null $userClass = BackendUser::class, array $roles = ['ROLE_ADMIN', 'ROLE_USER', 'ROLE_ALLOWED_TO_SWITCH_MEMBER', 'IS_AUTHENTICATED_FULLY']): Security&MockObject
     {
-        $user = $this->createMock(BackendUser::class);
+        $user = null;
+
+        if (null !== $userClass) {
+            $user = $this->createMock($userClass);
+        }
 
         $security = $this->createMock(Security::class);
         $security
@@ -200,53 +375,71 @@ class BackendPreviewSwitchControllerTest extends TestCase
             ->willReturn($user)
         ;
 
+        if ($canShare) {
+            $security
+                ->expects($this->exactly(2))
+                ->method('isGranted')
+                ->willReturnMap([
+                    ['ROLE_ALLOWED_TO_SWITCH_MEMBER', null, true],
+                    [ContaoCorePermissions::USER_CAN_ACCESS_MODULE, 'preview_link', $canShare],
+                ])
+            ;
+        } else {
+            $security
+                ->method('isGranted')
+                ->willReturnCallback(static fn (string $role): bool => \in_array($role, $roles, true))
+            ;
+        }
+
         return $security;
     }
 
-    /**
-     * @return Environment&MockObject
-     */
-    private function getTwigMock(string $render = 'CONTAO'): Environment
+    private function getTwigMock(): Environment&MockObject
     {
         $twig = $this->createMock(Environment::class);
         $twig
             ->method('render')
-            ->willReturn($render)
+            ->willReturnArgument(0)
         ;
 
         return $twig;
     }
 
-    /**
-     * @return CsrfTokenManagerInterface&MockObject
-     */
-    private function mockTokenManager(): CsrfTokenManagerInterface
+    private function mockTokenManager(): ContaoCsrfTokenManager&MockObject
     {
-        $twig = $this->createMock(CsrfTokenManagerInterface::class);
-        $twig
-            ->method('getToken')
-            ->willReturn(new CsrfToken('csrf', 'csrf'))
+        $tokenManager = $this->createMock(ContaoCsrfTokenManager::class);
+        $tokenManager
+            ->method('getDefaultTokenValue')
+            ->willReturn('csrf')
         ;
 
-        return $twig;
+        return $tokenManager;
     }
 
-    /**
-     * @return Connection&MockObject
-     */
-    private function mockConnection(array $return = []): Connection
+    private function mockTranslator(): TranslatorInterface&MockObject
     {
-        $resultStatement = $this->createMock(ResultStatement::class)
-            ->method('fetchAll')
-            ->willReturn($return)
+        $translator = $this->createMock(TranslatorInterface::class);
+        $translator
+            ->method('trans')
+            ->willReturnCallback(static fn (string $translation): string => $translation)
         ;
 
-        $connection = $this->createMock(Connection::class);
-        $connection
-            ->method('executeQuery')
-            ->willReturn($resultStatement)
+        return $translator;
+    }
+
+    private function mockFrontendPreviewAuthenticator(): FrontendPreviewAuthenticator&MockObject
+    {
+        $authenticator = $this->createMock(FrontendPreviewAuthenticator::class);
+        $authenticator
+            ->method('authenticateFrontendUser')
+            ->willReturnCallback(static fn (string $user): bool => 'member' === $user)
         ;
 
-        return $connection;
+        $authenticator
+            ->method('authenticateFrontendGuest')
+            ->willReturn(true)
+        ;
+
+        return $authenticator;
     }
 }

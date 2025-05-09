@@ -14,67 +14,50 @@ namespace Contao\CoreBundle\Fragment;
 
 use Contao\CoreBundle\Exception\ResponseException;
 use Contao\CoreBundle\Fragment\Reference\FragmentReference;
-use Contao\PageModel;
+use Contao\CoreBundle\Routing\PageFinder;
 use Psr\Container\ContainerInterface;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Controller\ControllerReference;
 use Symfony\Component\HttpKernel\Fragment\FragmentHandler as BaseFragmentHandler;
 
 class FragmentHandler extends BaseFragmentHandler
 {
-    /**
-     * @var ContainerInterface
-     */
-    private $renderers;
+    private array $initialized = [];
 
     /**
-     * @var BaseFragmentHandler
+     * @internal
      */
-    private $fragmentHandler;
-
-    /**
-     * @var FragmentRegistryInterface
-     */
-    private $fragmentRegistry;
-
-    /**
-     * @var ContainerInterface
-     */
-    private $preHandlers;
-
-    /**
-     * @var array
-     */
-    private $initialized = [];
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.fragment.handler" service instead
-     */
-    public function __construct(ContainerInterface $renderers, BaseFragmentHandler $fragmentHandler, RequestStack $requestStack, FragmentRegistryInterface $fragmentRegistry, ContainerInterface $preHandlers, bool $debug = false)
-    {
-        $this->renderers = $renderers;
-        $this->fragmentHandler = $fragmentHandler;
-        $this->fragmentRegistry = $fragmentRegistry;
-        $this->preHandlers = $preHandlers;
-
+    public function __construct(
+        /** @phpstan-ignore property.phpDocType */
+        private readonly ContainerInterface $renderers,
+        private readonly BaseFragmentHandler $fragmentHandler,
+        RequestStack $requestStack,
+        private readonly FragmentRegistryInterface $fragmentRegistry,
+        private readonly ContainerInterface $preHandlers,
+        private readonly PageFinder $pageFinder,
+        bool $debug = false,
+    ) {
         parent::__construct($requestStack, [], $debug);
     }
 
-    public function render($uri, $renderer = 'inline', array $options = []): ?string
+    public function render(ControllerReference|string $uri, string $renderer = 'inline', array $options = []): string|null
     {
         if (!$uri instanceof FragmentReference) {
             return $this->fragmentHandler->render($uri, $renderer, $options);
         }
 
-        $config = $this->fragmentRegistry->get($uri->controller);
-
-        if (null === $config) {
-            throw new UnknownFragmentException(sprintf('Invalid fragment identifier "%s"', $uri->controller));
+        if (!$config = $this->fragmentRegistry->get($uri->controller)) {
+            throw new UnknownFragmentException(\sprintf('Invalid fragment identifier "%s"', $uri->controller));
         }
 
         $this->preHandleFragment($uri, $config);
 
         $renderer = $config->getRenderer();
+
+        if ('inline' !== $renderer && $this->containsNonScalars($uri->attributes)) {
+            $renderer = 'forward';
+        }
 
         if (!isset($this->initialized[$renderer]) && $this->renderers->has($renderer)) {
             $this->addRenderer($this->renderers->get($renderer));
@@ -84,7 +67,7 @@ class FragmentHandler extends BaseFragmentHandler
         return parent::render($uri, $renderer, $config->getOptions());
     }
 
-    protected function deliver(Response $response): ?string
+    protected function deliver(Response $response): string|null
     {
         try {
             return parent::deliver($response);
@@ -98,8 +81,8 @@ class FragmentHandler extends BaseFragmentHandler
      */
     private function preHandleFragment(FragmentReference $uri, FragmentConfig $config): void
     {
-        if (!isset($uri->attributes['pageModel']) && $this->hasGlobalPageObject()) {
-            $uri->attributes['pageModel'] = $GLOBALS['objPage']->id;
+        if (!isset($uri->attributes['pageModel']) && ($pageModel = $this->pageFinder->getCurrentPage())) {
+            $uri->attributes['pageModel'] = $pageModel->id;
         }
 
         if ($this->preHandlers->has($uri->controller)) {
@@ -109,8 +92,18 @@ class FragmentHandler extends BaseFragmentHandler
         }
     }
 
-    private function hasGlobalPageObject(): bool
+    private function containsNonScalars(array $values): bool
     {
-        return isset($GLOBALS['objPage']) && $GLOBALS['objPage'] instanceof PageModel;
+        foreach ($values as $value) {
+            if (\is_array($value)) {
+                return $this->containsNonScalars($value);
+            }
+
+            if (!\is_scalar($value) && null !== $value) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

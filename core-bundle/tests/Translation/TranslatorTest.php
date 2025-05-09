@@ -12,16 +12,27 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\Translation;
 
+use Contao\CoreBundle\Config\ResourceFinder;
+use Contao\CoreBundle\Framework\ContaoFramework;
 use Contao\CoreBundle\Tests\TestCase;
+use Contao\CoreBundle\Translation\MessageCatalogue;
 use Contao\CoreBundle\Translation\Translator;
 use Contao\System;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Symfony\Component\Translation\MessageCatalogueInterface;
 use Symfony\Component\Translation\Translator as BaseTranslator;
+use Symfony\Contracts\Translation\TranslatorInterface;
 
 class TranslatorTest extends TestCase
 {
-    /**
-     * @dataProvider decoratedTranslatorDomainProvider
-     */
+    protected function tearDown(): void
+    {
+        unset($GLOBALS['TL_LANG']);
+
+        parent::tearDown();
+    }
+
+    #[DataProvider('decoratedTranslatorDomainProvider')]
     public function testForwardsTheMethodCallsToTheDecoratedTranslator(string $domain): void
     {
         $originalTranslator = $this->createMock(BaseTranslator::class);
@@ -50,7 +61,7 @@ class TranslatorTest extends TestCase
             ->method('initialize')
         ;
 
-        $translator = new Translator($originalTranslator, $framework);
+        $translator = $this->createTranslator($originalTranslator, $framework);
 
         $this->assertSame('trans', $translator->trans('id', ['param' => 'value'], $domain, 'en'));
 
@@ -59,30 +70,10 @@ class TranslatorTest extends TestCase
         $this->assertSame('en', $translator->getLocale());
     }
 
-    public function decoratedTranslatorDomainProvider(): \Generator
+    public static function decoratedTranslatorDomainProvider(): iterable
     {
         yield ['domain'];
         yield ['ContaoCoreBundle'];
-    }
-
-    /**
-     * @group legacy
-     *
-     * @expectedDeprecation The Symfony\Component\Translation\Translator::transChoice method is deprecated %s.
-     */
-    public function testForwardsTheLegacyMethodCallsToTheDecoratedTranslator(): void
-    {
-        $originalTranslator = $this->createMock(BaseTranslator::class);
-        $originalTranslator
-            ->expects($this->once())
-            ->method('transChoice')
-            ->with('id', 3, ['param' => 'value'], 'domain', 'en')
-            ->willReturn('transChoice')
-        ;
-
-        $translator = new Translator($originalTranslator, $this->mockContaoFramework());
-
-        $this->assertSame('transChoice', $translator->transChoice('id', 3, ['param' => 'value'], 'domain', 'en'));
     }
 
     public function testReadsFromTheGlobalLanguageArray(): void
@@ -100,7 +91,7 @@ class TranslatorTest extends TestCase
             ->method('initialize')
         ;
 
-        $translator = new Translator($this->createMock(BaseTranslator::class), $framework);
+        $translator = $this->createTranslator(null, $framework);
 
         $this->assertSame('MSC.foo', $translator->trans('MSC.foo', [], 'contao_default'));
 
@@ -108,6 +99,8 @@ class TranslatorTest extends TestCase
 
         $this->assertSame('bar', $translator->trans('MSC.foo', [], 'contao_default'));
         $this->assertSame('MSC.foo.bar', $translator->trans('MSC.foo.bar', [], 'contao_default'));
+        $this->assertSame('MSC.foo.0', $translator->trans('MSC.foo.0', [], 'contao_default'));
+        $this->assertSame('MSC.foo.123', $translator->trans('MSC.foo.123', [], 'contao_default'));
 
         $GLOBALS['TL_LANG']['MSC']['foo'] = 'bar %s baz %s';
 
@@ -126,7 +119,7 @@ class TranslatorTest extends TestCase
         unset(
             $GLOBALS['TL_LANG']['MSC']['foo'],
             $GLOBALS['TL_LANG']['MSC']['foo.bar\baz'],
-            $GLOBALS['TL_LANG']['MSC']['foo\\']['bar\baz.']
+            $GLOBALS['TL_LANG']['MSC']['foo\\']['bar\baz.'],
         );
     }
 
@@ -134,9 +127,19 @@ class TranslatorTest extends TestCase
     {
         $originalTranslator = $this->createMock(BaseTranslator::class);
         $originalTranslator
-            ->expects($this->once())
-            ->method('getLocale')
-            ->willReturn('de')
+            ->expects($this->atLeastOnce())
+            ->method('getCatalogue')
+            ->willReturnCallback(
+                function ($locale) {
+                    $catalogue = $this->createMock(MessageCatalogueInterface::class);
+                    $catalogue
+                        ->method('getLocale')
+                        ->willReturn($locale ?? 'de')
+                    ;
+
+                    return $catalogue;
+                },
+            )
         ;
 
         $adapter = $this->mockAdapter(['loadLanguageFile']);
@@ -152,8 +155,142 @@ class TranslatorTest extends TestCase
             ->method('initialize')
         ;
 
-        $translator = new Translator($originalTranslator, $framework);
+        $translator = $this->createTranslator($originalTranslator, $framework);
 
         $this->assertSame('MSC.foo', $translator->trans('MSC.foo', [], 'contao_default'));
+    }
+
+    public function testUsesADecoratedCatalogue(): void
+    {
+        $originalCatalogue = $this->createMock(MessageCatalogueInterface::class);
+
+        $originalTranslator = $this->createMock(BaseTranslator::class);
+        $originalTranslator
+            ->expects($this->atLeastOnce())
+            ->method('getCatalogue')
+            ->willReturn($originalCatalogue)
+        ;
+
+        $translator = $this->createTranslator($originalTranslator);
+
+        $this->assertNotSame($originalCatalogue, $translator->getCatalogue());
+    }
+
+    public function testUsesDecoratedCatalogues(): void
+    {
+        $originalCatalogueDe = $this->createMock(MessageCatalogueInterface::class);
+        $originalCatalogueDe
+            ->method('getLocale')
+            ->willReturn('de')
+        ;
+
+        $originalCatalogueEn = $this->createMock(MessageCatalogueInterface::class);
+        $originalCatalogueEn
+            ->method('getLocale')
+            ->willReturn('en')
+        ;
+
+        $originalTranslator = $this->createMock(BaseTranslator::class);
+        $originalTranslator
+            ->method('getCatalogues')
+            ->willReturn([$originalCatalogueDe, $originalCatalogueEn])
+        ;
+
+        $originalTranslator
+            ->method('getCatalogue')
+            ->willReturnMap([
+                ['de', $originalCatalogueDe],
+                ['en', $originalCatalogueEn],
+            ])
+        ;
+
+        $translator = $this->createTranslator($originalTranslator);
+        $catalogues = $translator->getCatalogues();
+
+        $this->assertCount(2, $catalogues);
+        $this->assertSame('de', $catalogues[0]->getLocale());
+        $this->assertSame('en', $catalogues[1]->getLocale());
+        $this->assertNotSame($originalCatalogueDe, $catalogues[0]);
+        $this->assertNotSame($originalCatalogueEn, $catalogues[1]);
+        $this->assertInstanceOf(MessageCatalogue::class, $catalogues[0]);
+        $this->assertInstanceOf(MessageCatalogue::class, $catalogues[1]);
+    }
+
+    public function testRestoresPreviousTranslationsInGlobals(): void
+    {
+        $originalTranslator = $this->createMock(BaseTranslator::class);
+        $originalTranslator
+            ->expects($this->never())
+            ->method('trans')
+        ;
+
+        $originalTranslator
+            ->expects($this->exactly(2))
+            ->method('getLocale')
+            ->willReturn('en')
+        ;
+
+        $originalTranslator
+            ->method('getCatalogue')
+            ->willReturnCallback(
+                function ($locale) {
+                    $catalogue = $this->createMock(MessageCatalogueInterface::class);
+                    $catalogue
+                        ->method('getLocale')
+                        ->willReturn($locale ?? 'en')
+                    ;
+
+                    return $catalogue;
+                },
+            )
+        ;
+
+        $expected = [['default', 'de'], ['default', 'en']];
+        $matcher = $this->exactly(2);
+
+        $adapter = $this->mockAdapter(['loadLanguageFile']);
+        $adapter
+            ->expects($matcher)
+            ->method('loadLanguageFile')
+            ->with($this->callback(
+                static fn (...$args) => $args === $expected[$matcher->numberOfInvocations() - 1],
+            ))
+        ;
+
+        $framework = $this->mockContaoFramework([System::class => $adapter]);
+        $framework
+            ->expects($this->atLeastOnce())
+            ->method('initialize')
+        ;
+
+        $translator = $this->createTranslator($originalTranslator, $framework);
+        $translator->setLocale('en');
+        $translator->trans('foobar', [], 'contao_default', 'de');
+    }
+
+    private function createTranslator(TranslatorInterface|null $translator = null, ContaoFramework|null $framework = null): Translator
+    {
+        if (!$translator) {
+            $translator = $this->createMock(BaseTranslator::class);
+            $translator
+                ->method('getCatalogue')
+                ->willReturnCallback(
+                    function ($locale) {
+                        $catalogue = $this->createMock(MessageCatalogueInterface::class);
+                        $catalogue
+                            ->method('getLocale')
+                            ->willReturn($locale ?? 'de')
+                        ;
+
+                        return $catalogue;
+                    },
+                )
+            ;
+        }
+
+        $framework ??= $this->mockContaoFramework();
+        $resourceFinder = $this->createMock(ResourceFinder::class);
+
+        return new Translator($translator, $framework, $resourceFinder);
     }
 }

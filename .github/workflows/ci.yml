@@ -2,94 +2,231 @@ name: CI
 
 on:
     pull_request: ~
-    push:
-        branches:
-            - master
-        tags:
-            - '*'
-    schedule:
-        - cron: 0 13 * * MON,TUE
+
+permissions: read-all
+
+defaults:
+    run:
+        # Simulate an interactive terminal with color support
+        shell: script -q -e -c "export TERM=xterm; bash {0}"
 
 jobs:
-    coverage:
-        name: Coverage
+    rector:
+        name: Rector
         runs-on: ubuntu-latest
-        if: github.event_name != 'schedule'
         steps:
             - name: Setup PHP
               uses: shivammathur/setup-php@v2
               with:
-                  php-version: 7.3
-                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, pcre, pdo, zlib
-                  tools: prestissimo, flex
-                  coverage: pcov
-
-            - name: Checkout
-              uses: actions/checkout@v1
-
-            - name: Install the dependencies
-              run: composer install --no-interaction --no-suggest
-
-            - name: Generate the coverage report
-              run: php -d pcov.enabled=1 vendor/bin/phpunit --testsuite=coverage --coverage-clover=clover.xml --colors=always
-
-            - name: Upload the coverage report
-              uses: codecov/codecov-action@v1
-              with:
-                  file: ./clover.xml
-                  fail_ci_if_error: true
-
-    coding-style:
-        name: Coding Style
-        runs-on: ubuntu-latest
-        if: github.event_name == 'pull_request'
-        steps:
-            - name: Setup PHP
-              uses: shivammathur/setup-php@v2
-              with:
-                  php-version: 7.3
-                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, pcre, pdo, zlib
-                  tools: prestissimo, flex
+                  php-version: 8.2
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
                   coverage: none
 
             - name: Checkout
-              uses: actions/checkout@v1
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
 
-            - name: Install the dependencies
-              run: composer install --no-interaction --no-suggest
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
 
-            - name: Check the coding style
+            - name: Install Rector
+              uses: ramsey/composer-install@v3
+              with:
+                  working-directory: vendor-bin/rector
+
+            - name: Run Rector
+              run: vendor-bin/rector/vendor/bin/rector --dry-run --no-progress-bar
+
+    ecs:
+        name: ECS
+        runs-on: ubuntu-latest
+        steps:
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: 8.2
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
+                  coverage: none
+
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
+
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
+
+            - name: Install ECS
+              uses: ramsey/composer-install@v3
+              with:
+                  working-directory: vendor-bin/ecs
+
+            - name: Run ECS
+              run: vendor-bin/ecs/vendor/bin/ecs check --no-progress-bar
+
+    ecs-legacy:
+        name: ECS legacy
+        runs-on: ubuntu-latest
+        steps:
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: 8.2
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
+                  coverage: none
+
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
+
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
+
+            - name: Install ECS
+              uses: ramsey/composer-install@v3
+              with:
+                  working-directory: vendor-bin/ecs
+
+            - name: Run ECS
               run: |
-                  vendor/bin/ecs check *-bundle/bin *-bundle/src *-bundle/tests --config vendor/contao/easy-coding-standard/config/default.yaml --no-progress-bar --ansi
-                  vendor/bin/ecs check *-bundle/src/Resources/contao --config vendor/contao/easy-coding-standard/config/legacy.yaml --no-progress-bar --ansi
-                  vendor/bin/ecs check *-bundle/src/Resources/contao/templates --config vendor/contao/easy-coding-standard/config/template.yaml --no-progress-bar --ansi
+                  vendor-bin/ecs/vendor/bin/ecs check --config vendor-bin/ecs/config/legacy.php --no-progress-bar
+                  vendor-bin/ecs/vendor/bin/ecs check --config vendor-bin/ecs/config/template.php --no-progress-bar
 
-            - name: Analyze the code
-              run: |
-                  vendor/bin/phpstan analyse core-bundle/src core-bundle/tests --level=5 --no-progress
-                  vendor/bin/psalm --no-suggestions --threads=4 --no-progress
+    phpstan:
+        name: PHPStan
+        runs-on: ubuntu-latest
+        steps:
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: 8.3
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
+                  coverage: none
 
-            - name: Analyze the YAML files
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
+
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
+
+            - name: Install PHPStan
+              uses: ramsey/composer-install@v3
+              with:
+                  working-directory: vendor-bin/phpstan
+
+            - name: Run PHPStan
+              run: vendor-bin/phpstan/vendor/bin/phpstan analyse --no-progress
+
+    yamllint:
+        name: YAMLlint
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
+
+            - name: Run YAMLlint
+              run: yamllint --format=github .
+
+    prettier:
+        name: Prettier
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
+
+            - name: Run Prettier
+              uses: creyD/prettier_action@v4.3
+              with:
+                  prettier_options: --check core-bundle/assets
+
+    service-linter:
+        name: Service linter
+        runs-on: ubuntu-latest
+        steps:
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: 8.2
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
+                  coverage: none
+
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
+
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
+
+            - name: Install the service linter
+              uses: ramsey/composer-install@v3
+              with:
+                  working-directory: vendor-bin/service-linter
+
+            - name: Run the service linter
+              run: vendor-bin/service-linter/bin/lint-service-ids
+
+    depcheck:
+        name: Depcheck
+        runs-on: ubuntu-latest
+        steps:
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: 8.2
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
+                  coverage: none
+
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  show-progress: false
+
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
+
+            - name: Check for unknown symbols (contao/contao)
+              run: vendor/bin/composer-dependency-analyser --config=depcheck.php
+
+            - name: Install the core bundle
               run: |
-                  python3 -m pip install --upgrade pip
-                  python3 -m pip install --upgrade yamllint
-                  /home/runner/.local/bin/yamllint .
+                  cd core-bundle
+                  php -r '
+                      $data = json_decode(file_get_contents(__DIR__."/composer.json"), true);
+                      $data["repositories"][1]["type"] = "path";
+                      $data["repositories"][1]["url"] = "../news-bundle";
+                      $data["repositories"][2]["type"] = "path";
+                      $data["repositories"][2]["url"] = "../test-case";
+                      file_put_contents(__DIR__."/composer.json", json_encode($data, JSON_UNESCAPED_SLASHES));
+                  '
+                  composer install --no-interaction --no-progress
+                  cd ..
+
+            - name: Check for unknown symbols (contao/core-bundle)
+              run: vendor/bin/composer-dependency-analyser --config=depcheck.php --composer-json=core-bundle/composer.json
 
     tests:
         name: PHP ${{ matrix.php }}
         runs-on: ubuntu-latest
-        if: github.event_name != 'push'
         strategy:
             fail-fast: false
             matrix:
-                php: [7.2, 7.3, 7.4]
+                php: [8.2, 8.3]
         steps:
             - name: Setup PHP
               uses: shivammathur/setup-php@v2
               with:
                   php-version: ${{ matrix.php }}
-                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, pcre, pdo_mysql, zlib
-                  tools: prestissimo, flex
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
                   coverage: none
 
             - name: Initialize the database
@@ -98,30 +235,58 @@ jobs:
                   mysql -uroot -proot -e "CREATE database contao_test"
 
             - name: Checkout
-              uses: actions/checkout@v1
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
 
-            - name: Install the dependencies
-              run: composer install --no-interaction --no-suggest
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
 
             - name: Run the unit tests
-              run: vendor/bin/phpunit --colors=always
+              run: vendor/bin/phpunit
 
-            - name: Run the functional tests
-              run: vendor/bin/phpunit --testsuite=functional --colors=always
+            - name: Run the functional tests with PDO MySQL
+              run: vendor/bin/phpunit --testsuite=functional
               env:
-                  DATABASE_URL: mysql://root:root@localhost:3306/contao_test
+                  DATABASE_URL: mysql://root:root@127.0.0.1:3306/contao_test
 
-    prefer-lowest:
-        name: Prefer Lowest
+            - name: Run the functional tests with MySQLi
+              run: vendor/bin/phpunit --testsuite=functional
+              env:
+                  DATABASE_URL: mysqli://root:root@127.0.0.1:3306/contao_test
+
+    reverse:
+        name: Reverse order
         runs-on: ubuntu-latest
-        if: github.event_name != 'push'
         steps:
             - name: Setup PHP
               uses: shivammathur/setup-php@v2
               with:
-                  php-version: 7.3
-                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, pcre, pdo_mysql, zlib
-                  tools: prestissimo, flex
+                  php-version: 8.2
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
+                  coverage: none
+
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
+
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
+
+            - name: Run the unit tests in reverse order
+              run: vendor/bin/phpunit --order-by=reverse --extension Contao\\CoreBundle\\Tests\\PhpunitExtension\\GlobalStateWatcher
+
+    nightly:
+        name: PHP 8.4
+        runs-on: ubuntu-latest
+        continue-on-error: true
+        steps:
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: 8.4
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
                   coverage: none
 
             - name: Initialize the database
@@ -130,38 +295,81 @@ jobs:
                   mysql -uroot -proot -e "CREATE database contao_test"
 
             - name: Checkout
-              uses: actions/checkout@v1
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
 
-            - name: Install the dependencies
-              run: composer update --prefer-lowest --prefer-stable --no-interaction --no-suggest
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
+              with:
+                  composer-options: --ignore-platform-req=php+
 
             - name: Run the unit tests
-              run: vendor/bin/phpunit --colors=always
+              run: vendor/bin/phpunit
 
             - name: Run the functional tests
-              run: vendor/bin/phpunit --testsuite=functional --colors=always
+              run: vendor/bin/phpunit --testsuite=functional
               env:
-                  DATABASE_URL: mysql://root:root@localhost:3306/contao_test
+                  DATABASE_URL: mysql://root:root@127.0.0.1:3306/contao_test
+
+    prefer-lowest:
+        name: Prefer lowest
+        runs-on: ubuntu-latest
+        steps:
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: 8.2
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
+                  coverage: none
+
+            - name: Initialize the database
+              run: |
+                  sudo /etc/init.d/mysql start
+                  mysql -uroot -proot -e "CREATE database contao_test"
+
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
+
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
+              with:
+                  dependency-versions: lowest
+
+            - name: Run the unit tests
+              run: vendor/bin/phpunit
+
+            - name: Run the functional tests with PDO MySQL
+              run: vendor/bin/phpunit --testsuite=functional
+              env:
+                  DATABASE_URL: mysql://root:root@127.0.0.1:3306/contao_test
+
+            - name: Run the functional tests with MySQLi
+              run: vendor/bin/phpunit --testsuite=functional
+              env:
+                  DATABASE_URL: mysqli://root:root@127.0.0.1:3306/contao_test
 
     bundles:
         name: Bundles
         runs-on: ubuntu-latest
-        if: github.event_name != 'push'
         steps:
             - name: Setup PHP
               uses: shivammathur/setup-php@v2
               with:
-                  php-version: 7.3
-                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, pcre, pdo, zlib
-                  tools: prestissimo, flex
+                  php-version: 8.2
+                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, mysqli, pcre, pdo_mysql, zlib
                   coverage: none
 
             - name: Checkout
-              uses: actions/checkout@v1
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
 
             - name: Test the single bundles
               run: |
-                  bundles=(calendar-bundle core-bundle faq-bundle manager-bundle news-bundle)
+                  bundles=(calendar-bundle comments-bundle core-bundle faq-bundle maker-bundle manager-bundle news-bundle newsletter-bundle)
                   for bundle in "${bundles[@]}"; do
                       cd $bundle
                       php -r '
@@ -170,93 +378,44 @@ jobs:
                               $data["repositories"][0]["type"] = "path";
                               $data["repositories"][0]["url"] = "../core-bundle";
                           }
-                          if ("contao/installation-bundle" !== $data["name"]) {
+                          if ("contao/news-bundle" !== $data["name"]) {
                               $data["repositories"][1]["type"] = "path";
-                              $data["repositories"][1]["url"] = "../installation-bundle";
+                              $data["repositories"][1]["url"] = "../news-bundle";
+                          }
+                          if ("contao/test-case" !== $data["name"]) {
+                              $data["repositories"][2]["type"] = "path";
+                              $data["repositories"][2]["url"] = "../test-case";
                           }
                           file_put_contents(__DIR__."/composer.json", json_encode($data, JSON_UNESCAPED_SLASHES));
                       '
-                      COMPOSER_ROOT_VERSION=dev-${{ env.GITHUB_SHA }} composer install --no-interaction --no-suggest
-                      vendor/bin/phpunit --colors=always
+                      composer install --no-interaction --no-progress
+                      vendor/bin/phpunit
                       cd ..
                   done
 
-    windows:
-        name: Windows
-        runs-on: windows-latest
-        if: github.event_name != 'push'
-        steps:
-            - name: Setup PHP
-              uses: shivammathur/setup-php@v2
-              with:
-                  php-version: 7.3
-                  extensions: dom, fileinfo, filter, gd, hash, intl, json, mbstring, pcre, pdo_mysql, zlib
-                  ini-values: memory_limit=1G
-                  tools: prestissimo, flex
-                  coverage: none
-
-            - name: Adjust the Git autocrlf setting
-              run: git config --global core.autocrlf false
-
-            - name: Checkout
-              uses: actions/checkout@v1
-
-            - name: Install the dependencies
-              run: composer install --no-interaction --no-suggest --no-progress
-
-            - name: Run the unit tests
-              run: vendor/bin/phpunit.bat --colors=always
-
-    composer:
-        name: Composer
+    monorepo-check:
+        name: Monorepo check
         runs-on: ubuntu-latest
-        if: github.event_name != 'push'
         steps:
             - name: Setup PHP
               uses: shivammathur/setup-php@v2
               with:
-                  php-version: 7.3
+                  php-version: 8.2
                   extensions: json, zlib
-                  tools: prestissimo
                   coverage: none
 
             - name: Checkout
-              uses: actions/checkout@v1
+              uses: actions/checkout@v4
+              with:
+                  show-progress: false
 
-            - name: Install the dependencies
-              run: |
-                  composer global require contao/monorepo-tools:dev-master
-                  composer install --no-interaction --no-suggest
+            - name: Install Contao
+              uses: ramsey/composer-install@v3
+
+            - name: Install the monorepo tools
+              uses: ramsey/composer-install@v3
+              with:
+                  working-directory: vendor-bin/monorepo-tools
 
             - name: Validate the composer.json files
-              run: $HOME/.composer/vendor/bin/monorepo-tools composer-json --validate --ansi
-
-    monorepo-split:
-        name: Monorepo Split
-        runs-on: ubuntu-latest
-        if: github.event_name == 'push'
-        steps:
-            - name: Setup PHP
-              uses: shivammathur/setup-php@v2
-              with:
-                  php-version: 7.3
-                  extensions: json, zlib
-                  tools: prestissimo
-                  coverage: none
-
-            - name: Checkout
-              uses: actions/checkout@v1
-
-            - name: Cache the monorepo split
-              uses: actions/cache@v1
-              with:
-                  path: .monorepo-split-cache
-                  key: dev-${GITHUB_REF##*/}
-
-            - name: Install the dependencies
-              run: composer global require contao/monorepo-tools:dev-master
-
-            - name: Split the monorepo
-              run: $HOME/.composer/vendor/bin/monorepo-tools split ${GITHUB_REF##*/}
-              env:
-                  GITHUB_TOKEN: ${{ secrets.MONOREPO_SPLIT_TOKEN }}
+              run: vendor-bin/monorepo-tools/vendor/bin/monorepo-tools composer-json --validate

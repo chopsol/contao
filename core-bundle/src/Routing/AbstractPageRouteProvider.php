@@ -13,6 +13,9 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Routing;
 
 use Contao\CoreBundle\Framework\ContaoFramework;
+use Contao\CoreBundle\Routing\Page\PageRegistry;
+use Contao\CoreBundle\Routing\Page\PageRoute;
+use Contao\CoreBundle\Util\LocaleUtil;
 use Contao\Model\Collection;
 use Contao\PageModel;
 use Symfony\Cmf\Component\Routing\Candidates\CandidatesInterface;
@@ -22,20 +25,11 @@ use Symfony\Component\Routing\Route;
 
 abstract class AbstractPageRouteProvider implements RouteProviderInterface
 {
-    /**
-     * @var ContaoFramework
-     */
-    protected $framework;
-
-    /**
-     * @var CandidatesInterface
-     */
-    protected $candidates;
-
-    public function __construct(ContaoFramework $framework, CandidatesInterface $candidates)
-    {
-        $this->framework = $framework;
-        $this->candidates = $candidates;
+    public function __construct(
+        protected ContaoFramework $framework,
+        protected CandidatesInterface $candidates,
+        protected PageRegistry $pageRegistry,
+    ) {
     }
 
     /**
@@ -43,9 +37,9 @@ abstract class AbstractPageRouteProvider implements RouteProviderInterface
      */
     protected function findCandidatePages(Request $request): array
     {
-        $candidates = $this->candidates->getCandidates($request);
+        $candidates = array_map(\strval(...), $this->candidates->getCandidates($request));
 
-        if (empty($candidates)) {
+        if (!$candidates) {
             return [];
         }
 
@@ -53,7 +47,7 @@ abstract class AbstractPageRouteProvider implements RouteProviderInterface
         $aliases = [];
 
         foreach ($candidates as $candidate) {
-            if (is_numeric($candidate)) {
+            if (preg_match('/^[1-9]\d*$/', $candidate)) {
                 $ids[] = (int) $candidate;
             } else {
                 $aliases[] = $candidate;
@@ -62,15 +56,14 @@ abstract class AbstractPageRouteProvider implements RouteProviderInterface
 
         $conditions = [];
 
-        if (!empty($ids)) {
+        if ($ids) {
             $conditions[] = 'tl_page.id IN ('.implode(',', $ids).')';
         }
 
-        if (!empty($aliases)) {
+        if ($aliases) {
             $conditions[] = 'tl_page.alias IN ('.implode(',', array_fill(0, \count($aliases), '?')).')';
         }
 
-        /** @var PageModel $pageModel */
         $pageModel = $this->framework->getAdapter(PageModel::class);
         $pages = $pageModel->findBy([implode(' OR ', $conditions)], $aliases);
 
@@ -78,8 +71,9 @@ abstract class AbstractPageRouteProvider implements RouteProviderInterface
             return [];
         }
 
-        /** @var array<PageModel> */
-        return $pages->getModels();
+        $models = $pages->getModels();
+
+        return array_filter($models, fn (PageModel $model) => $this->pageRegistry->isRoutable($model));
     }
 
     /**
@@ -90,13 +84,13 @@ abstract class AbstractPageRouteProvider implements RouteProviderInterface
         $ids = [];
 
         foreach ($names as $name) {
-            if (0 !== strncmp($name, 'tl_page.', 8)) {
+            if (!str_starts_with($name, 'tl_page.')) {
                 continue;
             }
 
-            [, $id] = explode('.', $name);
+            [, $id] = explode('.', (string) $name);
 
-            if (!is_numeric($id)) {
+            if (!preg_match('/^[1-9]\d*$/', $id)) {
                 continue;
             }
 
@@ -106,7 +100,7 @@ abstract class AbstractPageRouteProvider implements RouteProviderInterface
         return array_unique($ids);
     }
 
-    protected function compareRoutes(Route $a, Route $b, array $languages = null): int
+    protected function compareRoutes(Route $a, Route $b, array|null $languages = null): int
     {
         if ('' !== $a->getHost() && '' === $b->getHost()) {
             return -1;
@@ -122,42 +116,46 @@ abstract class AbstractPageRouteProvider implements RouteProviderInterface
         /** @var PageModel|null $pageB */
         $pageB = $b->getDefault('pageModel');
 
-        // Check if the page models are valid (should always be the case, as routes are generated from pages)
+        // Check if the page models are valid (should always be the case, as routes are
+        // generated from pages)
         if (!$pageA instanceof PageModel || !$pageB instanceof PageModel) {
             return 0;
         }
 
-        if (null !== $languages && $pageA->rootLanguage !== $pageB->rootLanguage) {
-            $langA = $languages[$pageA->rootLanguage] ?? null;
-            $langB = $languages[$pageB->rootLanguage] ?? null;
+        $langA = null;
+        $langB = null;
 
-            if (null === $langA && null === $langB) {
-                if ($pageA->rootIsFallback && !$pageB->rootIsFallback) {
-                    return -1;
-                }
+        if (null !== $languages && ($pageA->rootLanguage !== $pageB->rootLanguage || $pageA->domain !== $pageB->domain)) {
+            $fallbackA = LocaleUtil::getFallbacks($pageA->rootLanguage);
+            $fallbackB = LocaleUtil::getFallbacks($pageB->rootLanguage);
+            $langA = $this->getLocalePriority($fallbackA, $fallbackB, $languages);
+            $langB = $this->getLocalePriority($fallbackB, $fallbackA, $languages);
 
-                if ($pageB->rootIsFallback && !$pageA->rootIsFallback) {
-                    return 1;
-                }
-
-                return $pageA->rootSorting <=> $pageB->rootSorting;
+            if (null === $langA && null === $langB && LocaleUtil::getPrimaryLanguage($pageA->rootLanguage) === LocaleUtil::getPrimaryLanguage($pageB->rootLanguage)) {
+                // If both pages have the same language without region and neither region has a
+                // priority, (e.g. user prefers "de" but we have "de-CH" and "de-DE"), sort by
+                // their root page order.
+                $langA = $pageA->rootSorting;
+                $langB = $pageB->rootSorting;
             }
+        }
 
-            if (null === $langA && null !== $langB) {
-                return 1;
-            }
-
-            if (null !== $langA && null === $langB) {
+        if (null === $langA && null === $langB) {
+            if ($pageA->rootIsFallback && !$pageB->rootIsFallback) {
                 return -1;
             }
 
-            if ($langA < $langB) {
-                return -1;
-            }
-
-            if ($langA > $langB) {
+            if ($pageB->rootIsFallback && !$pageA->rootIsFallback) {
                 return 1;
             }
+        } elseif (null === $langA && null !== $langB) {
+            return 1;
+        } elseif (null !== $langA && null === $langB) {
+            return -1;
+        } elseif ($langA < $langB) {
+            return -1;
+        } elseif ($langA > $langB) {
+            return 1;
         }
 
         if ('root' !== $pageA->type && 'root' === $pageB->type) {
@@ -168,24 +166,71 @@ abstract class AbstractPageRouteProvider implements RouteProviderInterface
             return 1;
         }
 
-        return strnatcasecmp((string) $pageB->alias, (string) $pageA->alias);
+        if ($pageA->routePriority !== $pageB->routePriority) {
+            return $pageB->routePriority <=> $pageA->routePriority;
+        }
+
+        $pathA = $a instanceof PageRoute && $a->getUrlSuffix() ? substr($a->getPath(), 0, -\strlen($a->getUrlSuffix())) : $a->getPath();
+        $pathB = $b instanceof PageRoute && $b->getUrlSuffix() ? substr($b->getPath(), 0, -\strlen($b->getUrlSuffix())) : $b->getPath();
+
+        // Prioritize the default behaviour when "requireItem" is enabled
+        if ($pathA === $pathB && str_ends_with($pathA, '{!parameters}')) {
+            $paramA = $a->getRequirement('parameters');
+            $paramB = $b->getRequirement('parameters');
+
+            if ('/.+?' === $paramA && '(/.+?)?' === $paramB) {
+                return -1;
+            }
+
+            if ('(/.+?)?' === $paramA && '/.+?' === $paramB) {
+                return 1;
+            }
+        }
+
+        $countA = \count(explode('/', $pathA));
+        $countB = \count(explode('/', $pathB));
+
+        if ($countA > $countB) {
+            return -1;
+        }
+
+        if ($countB > $countA) {
+            return 1;
+        }
+
+        return strnatcasecmp($pathA, $pathB);
     }
 
     protected function convertLanguagesForSorting(array $languages): array
     {
-        foreach ($languages as &$language) {
-            $language = str_replace('_', '-', $language);
+        $result = [];
 
-            if (5 === \strlen($language)) {
-                $lng = substr($language, 0, 2);
+        foreach ($languages as $language) {
+            if (!$locales = LocaleUtil::getFallbacks($language)) {
+                continue;
+            }
 
-                // Append the language if only language plus dialect is given (see #430)
-                if (!\in_array($lng, $languages, true)) {
-                    $languages[] = $lng;
+            $language = array_pop($locales);
+            $result[] = $language;
+
+            foreach (array_reverse($locales) as $locale) {
+                if (!\in_array($locale, $result, true)) {
+                    $result[] = $locale;
                 }
             }
         }
 
-        return array_flip(array_values($languages));
+        return array_flip($result);
+    }
+
+    private function getLocalePriority(array $locales, array $notIn, array $languagePriority): int|null
+    {
+        foreach (array_reverse($locales) as $locale) {
+            if (isset($languagePriority[$locale]) && !\in_array($locale, $notIn, true)) {
+                return $languagePriority[$locale];
+            }
+        }
+
+        return null;
     }
 }

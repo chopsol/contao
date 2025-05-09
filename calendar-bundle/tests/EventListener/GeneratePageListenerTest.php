@@ -21,15 +21,18 @@ use Contao\Model\Collection;
 use Contao\PageModel;
 use Contao\Template;
 use Contao\TestCase\ContaoTestCase;
-use PHPUnit\Framework\MockObject\MockObject;
 
 class GeneratePageListenerTest extends ContaoTestCase
 {
+    protected function tearDown(): void
+    {
+        unset($GLOBALS['TL_CONFIG'], $GLOBALS['TL_HEAD']);
+
+        parent::tearDown();
+    }
+
     public function testAddsTheCalendarFeedLink(): void
     {
-        $GLOBALS['TL_HEAD'] = [];
-
-        /** @var CalendarFeedModel&MockObject $calendarFeedModel */
         $calendarFeedModel = $this->mockClassWithProperties(CalendarFeedModel::class);
         $calendarFeedModel->feedBase = 'http://localhost/';
         $calendarFeedModel->alias = 'events';
@@ -44,7 +47,6 @@ class GeneratePageListenerTest extends ContaoTestCase
             Template::class => new Adapter(Template::class),
         ];
 
-        /** @var LayoutModel&MockObject $layoutModel */
         $layoutModel = $this->mockClassWithProperties(LayoutModel::class);
         $layoutModel->calendarfeeds = 'a:1:{i:0;i:3;}';
 
@@ -53,39 +55,33 @@ class GeneratePageListenerTest extends ContaoTestCase
 
         $this->assertSame(
             ['<link type="application/rss+xml" rel="alternate" href="http://localhost/share/events.xml" title="Upcoming events">'],
-            $GLOBALS['TL_HEAD']
+            $GLOBALS['TL_HEAD'],
         );
     }
 
     public function testDoesNotAddTheCalendarFeedLinkIfThereAreNoFeeds(): void
     {
-        $GLOBALS['TL_HEAD'] = [];
-
-        /** @var LayoutModel&MockObject $layoutModel */
         $layoutModel = $this->mockClassWithProperties(LayoutModel::class);
         $layoutModel->calendarfeeds = '';
 
         $listener = new GeneratePageListener($this->mockContaoFramework());
         $listener($this->createMock(PageModel::class), $layoutModel);
 
-        $this->assertEmpty($GLOBALS['TL_HEAD']);
+        $this->assertEmpty($GLOBALS['TL_HEAD'] ?? null);
     }
 
     public function testDoesNotAddTheCalendarFeedLinkIfThereAreNoModels(): void
     {
-        $GLOBALS['TL_HEAD'] = [];
-
         $adapters = [
             CalendarFeedModel::class => $this->mockConfiguredAdapter(['findByIds' => null]),
         ];
 
-        /** @var LayoutModel&MockObject $layoutModel */
         $layoutModel = $this->mockClassWithProperties(LayoutModel::class);
         $layoutModel->calendarfeeds = 'a:1:{i:0;i:3;}';
 
         $listener = new GeneratePageListener($this->mockContaoFramework($adapters));
         $listener($this->createMock(PageModel::class), $layoutModel);
 
-        $this->assertEmpty($GLOBALS['TL_HEAD']);
+        $this->assertEmpty($GLOBALS['TL_HEAD'] ?? null);
     }
 }

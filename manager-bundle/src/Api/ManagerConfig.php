@@ -13,42 +13,40 @@ declare(strict_types=1);
 namespace Contao\ManagerBundle\Api;
 
 use Symfony\Component\Filesystem\Filesystem;
+use Symfony\Component\Filesystem\Path;
 use Symfony\Component\Yaml\Yaml;
-use Webmozart\PathUtil\Path;
 
 /**
  * @internal
  */
 class ManagerConfig
 {
-    /**
-     * @var string
-     */
-    private $configFile;
+    private string $configFile;
 
-    /**
-     * @var Filesystem|null
-     */
-    private $filesystem;
+    private readonly Filesystem $filesystem;
 
-    /**
-     * @var array
-     */
-    private $config;
+    private array|null $config = null;
 
-    public function __construct(string $projectDir, Filesystem $filesystem = null)
+    public function __construct(string $projectDir, Filesystem|null $filesystem = null)
     {
         if (false !== ($realpath = realpath($projectDir))) {
-            $projectDir = (string) $realpath;
+            $projectDir = $realpath;
         }
 
-        $this->configFile = Path::join($projectDir, 'config/contao-manager.yml');
         $this->filesystem = $filesystem ?: new Filesystem();
+        $this->configFile = Path::join($projectDir, 'config/contao-manager.yaml');
+
+        if ($this->filesystem->exists($this->configFile)) {
+            return;
+        }
+
+        if ($this->filesystem->exists($path = Path::join($projectDir, 'config/contao-manager.yml'))) {
+            trigger_deprecation('contao/manager-bundle', '5.0', 'Using a contao-manager.yml file has been deprecated and will no longer work in Contao 6. Use a contao-manager.yaml file instead.');
+
+            $this->configFile = $path;
+        }
     }
 
-    /**
-     * @return array<mixed>
-     */
     public function all(): array
     {
         if (null === $this->config) {
@@ -58,9 +56,6 @@ class ManagerConfig
         return $this->config;
     }
 
-    /**
-     * @return array<mixed>
-     */
     public function read(): array
     {
         $this->config = [];

@@ -106,10 +106,8 @@ class ApplicationTest extends ContaoTestCase
         $application = $this->getApplication();
         $application->setPluginLoader($pluginLoader);
 
-        /** @var array $commands */
         $commands = $application->all();
 
-        $this->assertCount(4, $commands);
         $this->assertArrayHasKey('config:get', $commands);
     }
 
@@ -139,12 +137,8 @@ class ApplicationTest extends ContaoTestCase
         $application->all();
     }
 
-    private function getApplication(string $path = null): Application
+    private function getApplication(string|null $path = null): Application
     {
-        if (null === $path) {
-            $path = $this->getTempDir();
-        }
-
-        return new Application($path);
+        return new Application($path ?? $this->getTempDir());
     }
 }

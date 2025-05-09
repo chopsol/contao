@@ -14,11 +14,17 @@ namespace Contao\CoreBundle\Crawl\Escargot;
 
 use Contao\CoreBundle\Crawl\Escargot\Subscriber\EscargotSubscriberInterface;
 use Contao\CoreBundle\Framework\ContaoFramework;
+use Contao\CoreBundle\Routing\ContentUrlGenerator;
 use Contao\PageModel;
 use Doctrine\DBAL\Connection;
 use Nyholm\Psr7\Uri;
-use Ramsey\Uuid\Uuid;
+use Psr\Http\Message\UriInterface;
 use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Component\HttpClient\ScopingHttpClient;
+use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\Routing\Exception\ExceptionInterface;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Uid\Uuid;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Terminal42\Escargot\BaseUriCollection;
 use Terminal42\Escargot\Escargot;
@@ -32,39 +38,32 @@ use Terminal42\Escargot\Subscriber\RobotsSubscriber;
 
 class Factory
 {
-    public const USER_AGENT = 'contao/crawler';
-
-    /**
-     * @var Connection
-     */
-    private $connection;
-
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    /**
-     * @var array<string>
-     */
-    private $additionalUris;
-
-    /**
-     * @var array
-     */
-    private $defaultHttpClientOptions;
+    final public const USER_AGENT = 'contao/crawler';
 
     /**
      * @var array<EscargotSubscriberInterface>
      */
-    private $subscribers = [];
+    private array $subscribers = [];
 
-    public function __construct(Connection $connection, ContaoFramework $framework, array $additionalUris = [], array $defaultHttpClientOptions = [])
-    {
-        $this->connection = $connection;
-        $this->framework = $framework;
-        $this->additionalUris = $additionalUris;
-        $this->defaultHttpClientOptions = $defaultHttpClientOptions;
+    /**
+     * @var \Closure(array<string, mixed>): HttpClientInterface
+     */
+    private readonly \Closure $httpClientFactory;
+
+    /**
+     * @param array<string>                                            $additionalUris
+     * @param \Closure(array<string, mixed>): HttpClientInterface|null $httpClientFactory
+     */
+    public function __construct(
+        private readonly Connection $connection,
+        private readonly ContaoFramework $framework,
+        private readonly ContentUrlGenerator $urlGenerator,
+        private readonly RequestStack $requestStack,
+        private readonly array $additionalUris = [],
+        private readonly array $defaultHttpClientOptions = [],
+        \Closure|null $httpClientFactory = null,
+    ) {
+        $this->httpClientFactory = $httpClientFactory ?? static fn (array $defaultOptions) => HttpClient::create($defaultOptions);
     }
 
     public function addSubscriber(EscargotSubscriberInterface $subscriber): self
@@ -79,15 +78,13 @@ class Factory
      */
     public function getSubscribers(array $selectedSubscribers = []): array
     {
-        if (0 === \count($selectedSubscribers)) {
+        if (!$selectedSubscribers) {
             return $this->subscribers;
         }
 
         return array_filter(
             $this->subscribers,
-            static function (EscargotSubscriberInterface $subscriber) use ($selectedSubscribers): bool {
-                return \in_array($subscriber->getName(), $selectedSubscribers, true);
-            }
+            static fn (EscargotSubscriberInterface $subscriber): bool => \in_array($subscriber->getName(), $selectedSubscribers, true),
         );
     }
 
@@ -97,10 +94,8 @@ class Factory
     public function getSubscriberNames(): array
     {
         return array_map(
-            static function (EscargotSubscriberInterface $subscriber): string {
-                return $subscriber->getName();
-            },
-            $this->subscribers
+            static fn (EscargotSubscriberInterface $subscriber): string => $subscriber->getName(),
+            $this->subscribers,
         );
     }
 
@@ -108,13 +103,7 @@ class Factory
     {
         return new LazyQueue(
             new InMemoryQueue(),
-            new DoctrineQueue(
-                $this->connection,
-                static function (): string {
-                    return Uuid::uuid4()->toString();
-                },
-                'tl_crawl_queue'
-            )
+            new DoctrineQueue($this->connection, static fn (): string => Uuid::v4()->toRfc4122(), 'tl_crawl_queue'),
         );
     }
 
@@ -144,31 +133,25 @@ class Factory
         $this->framework->initialize();
 
         $collection = new BaseUriCollection();
-
-        /** @var PageModel $pageModel */
         $pageModel = $this->framework->getAdapter(PageModel::class);
-        $rootPages = $pageModel->findPublishedRootPages();
 
-        if (null === $rootPages) {
+        if (!$rootPages = $pageModel->findPublishedRootPages()) {
             return $collection;
         }
 
         foreach ($rootPages as $rootPage) {
-            $collection->add(new Uri($rootPage->getAbsoluteUrl()));
+            try {
+                $collection->add(new Uri($this->urlGenerator->generate($rootPage, [], UrlGeneratorInterface::ABSOLUTE_URL)));
+            } catch (ExceptionInterface) {
+            }
         }
 
         return $collection;
     }
 
-    /**
-     * @throws \InvalidArgumentException
-     */
     public function create(BaseUriCollection $baseUris, QueueInterface $queue, array $selectedSubscribers, array $clientOptions = []): Escargot
     {
-        $escargot = Escargot::create($baseUris, $queue)
-            ->withHttpClient($this->createHttpClient($clientOptions))
-            ->withUserAgent(self::USER_AGENT)
-        ;
+        $escargot = Escargot::create($baseUris, $queue)->withHttpClient($this->createHttpClient($clientOptions));
 
         $this->registerDefaultSubscribers($escargot);
         $this->registerSubscribers($escargot, $this->validateSubscribers($selectedSubscribers));
@@ -177,15 +160,11 @@ class Factory
     }
 
     /**
-     * @throws \InvalidArgumentException
      * @throws InvalidJobIdException
      */
     public function createFromJobId(string $jobId, QueueInterface $queue, array $selectedSubscribers, array $clientOptions = []): Escargot
     {
-        $escargot = Escargot::createFromJobId($jobId, $queue)
-            ->withHttpClient($this->createHttpClient($clientOptions))
-            ->withUserAgent(self::USER_AGENT)
-        ;
+        $escargot = Escargot::createFromJobId($jobId, $queue)->withHttpClient($this->createHttpClient($clientOptions));
 
         $this->registerDefaultSubscribers($escargot);
         $this->registerSubscribers($escargot, $this->validateSubscribers($selectedSubscribers));
@@ -195,15 +174,77 @@ class Factory
 
     private function createHttpClient(array $options = []): HttpClientInterface
     {
-        return HttpClient::create(
-            array_merge_recursive(
-                [
-                    'headers' => ['accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'],
-                    'max_duration' => 10, // Ignore requests that take longer than 10 seconds
+        $options = array_merge_recursive(
+            [
+                'headers' => [
+                    'accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'user-agent' => self::USER_AGENT,
                 ],
-                array_merge_recursive($this->getDefaultHttpClientOptions(), $options)
-            )
+                'max_duration' => 10, // Ignore requests that take longer than 10 seconds
+            ],
+            array_merge_recursive($this->getDefaultHttpClientOptions(), $options),
         );
+
+        // Make sure confidential headers force a scoped client so external domains do
+        // not leak data
+        $cleanOptions = $this->cleanOptionsFromConfidentialData($options);
+
+        if ($options === $cleanOptions) {
+            return ($this->httpClientFactory)($options);
+        }
+
+        $scopedOptionsByRegex = [];
+
+        // All options including the confidential headers for our root page collection
+        foreach ($this->getRootPageUriCollection()->all() as $rootPageUri) {
+            $scopedOptionsByRegex[preg_quote($this->getOriginFromUri($rootPageUri))] = $options;
+        }
+
+        // Closing the session is necessary here as otherwise we might run into our own
+        // session lock
+        if ($this->requestStack->getMainRequest()?->hasSession()) {
+            $this->requestStack->getMainRequest()->getSession()->save();
+        }
+
+        return new ScopingHttpClient(($this->httpClientFactory)($cleanOptions), $scopedOptionsByRegex);
+    }
+
+    private function getOriginFromUri(UriInterface $uri): string
+    {
+        $origin = $uri->getScheme().'://'.$uri->getHost();
+
+        if ($uri->getPort()) {
+            $origin .= ':'.$uri->getPort();
+        }
+
+        return $origin.'/';
+    }
+
+    private function cleanOptionsFromConfidentialData(array $options): array
+    {
+        $cleanOptions = [];
+
+        foreach ($options as $k => $v) {
+            if ('headers' === $k) {
+                foreach ($v as $header => $value) {
+                    if (\in_array(strtolower($header), ['authorization', 'cookie'], true)) {
+                        continue;
+                    }
+
+                    $cleanOptions['headers'][$header] = $value;
+                }
+
+                continue;
+            }
+
+            if ('basic_auth' === $k || 'bearer_auth' === $k) {
+                continue;
+            }
+
+            $cleanOptions[$k] = $v;
+        }
+
+        return $cleanOptions;
     }
 
     private function registerDefaultSubscribers(Escargot $escargot): void
@@ -221,24 +262,12 @@ class Factory
         }
     }
 
-    /**
-     * @throws \InvalidArgumentException
-     */
     private function validateSubscribers(array $selectedSubscribers): array
     {
-        $msg = sprintf(
-            'You have to specify at least one valid subscriber name. Valid subscribers are: %s',
-            implode(', ', $this->getSubscriberNames())
-        );
-
-        if (0 === \count($selectedSubscribers)) {
-            throw new \InvalidArgumentException($msg);
-        }
-
         $selectedSubscribers = array_intersect($this->getSubscriberNames(), $selectedSubscribers);
 
-        if (0 === \count($selectedSubscribers)) {
-            throw new \InvalidArgumentException($msg);
+        if (!$selectedSubscribers) {
+            throw new \InvalidArgumentException('You have to specify at least one valid subscriber name. Valid subscribers are: '.implode(', ', $this->getSubscriberNames()));
         }
 
         return $selectedSubscribers;

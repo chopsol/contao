@@ -13,36 +13,21 @@ declare(strict_types=1);
 namespace Contao\ManagerBundle\Controller;
 
 use Contao\ManagerBundle\HttpKernel\JwtManager;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\Security\Core\Exception\AccessDeniedException;
-use Symfony\Component\Security\Core\Security;
 
 class DebugController
 {
     /**
-     * @var RequestStack
+     * @internal
      */
-    private $requestStack;
-
-    /**
-     * @var JwtManager
-     */
-    private $jwtManager;
-
-    /**
-     * @var Security
-     */
-    private $security;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "Contao\ManagerBundle\Controller\DebugController" service instead
-     */
-    public function __construct(Security $security, RequestStack $requestStack, JwtManager $jwtManager)
-    {
-        $this->security = $security;
-        $this->requestStack = $requestStack;
-        $this->jwtManager = $jwtManager;
+    public function __construct(
+        private readonly Security $security,
+        private readonly RequestStack $requestStack,
+        private readonly JwtManager $jwtManager,
+    ) {
     }
 
     public function enableAction(): RedirectResponse
@@ -61,9 +46,7 @@ class DebugController
             throw new AccessDeniedException();
         }
 
-        $request = $this->requestStack->getCurrentRequest();
-
-        if (null === $request) {
+        if (!$request = $this->requestStack->getCurrentRequest()) {
             throw new \RuntimeException('The request stack did not contain a request');
         }
 
@@ -73,7 +56,7 @@ class DebugController
             $referer = '?'.base64_decode($request->query->get('referer'), true);
         }
 
-        $response = new RedirectResponse($request->getSchemeAndHttpHost().$request->getPathInfo().$referer);
+        $response = new RedirectResponse($request->getSchemeAndHttpHost().$request->getBaseUrl().$request->getPathInfo().$referer);
 
         $this->jwtManager->addResponseCookie($response, ['debug' => $debug]);
 

@@ -12,23 +12,17 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Config;
 
+use Symfony\Component\Filesystem\Path;
 use Symfony\Component\Finder\Finder;
-use Webmozart\PathUtil\Path;
 
 /**
  * Creates a Finder object with the bundle paths set.
  */
 class ResourceFinder implements ResourceFinderInterface
 {
-    /**
-     * @var array
-     */
-    private $paths;
+    private readonly array $paths;
 
-    /**
-     * @param string|array $paths
-     */
-    public function __construct($paths)
+    public function __construct(array|string $paths)
     {
         $this->paths = (array) $paths;
     }
@@ -38,28 +32,26 @@ class ResourceFinder implements ResourceFinderInterface
         return Finder::create()->in($this->paths);
     }
 
-    public function findIn($subpath): Finder
+    public function findIn(string $subpath): Finder
     {
         return Finder::create()->in($this->getExistingSubpaths($subpath));
     }
 
     /**
-     * @throws \InvalidArgumentException
-     *
      * @return array<string>
      */
-    private function getExistingSubpaths(string $subpath): array
+    public function getExistingSubpaths(string $subpath): array
     {
         $paths = [];
 
-        foreach ($this->paths as $path) {
+        foreach ($this->paths as $name => $path) {
             if (is_dir($dir = Path::join($path, $subpath))) {
-                $paths[] = $dir;
+                $paths[$name] = $dir;
             }
         }
 
-        if (empty($paths)) {
-            throw new \InvalidArgumentException(sprintf('The subpath "%s" does not exists.', $subpath));
+        if (!$paths) {
+            throw new \InvalidArgumentException(\sprintf('The subpath "%s" does not exists.', $subpath));
         }
 
         return $paths;

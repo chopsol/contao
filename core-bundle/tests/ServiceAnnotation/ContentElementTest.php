@@ -20,6 +20,8 @@ class ContentElementTest extends TestCase
 {
     public function testReturnsTheTagName(): void
     {
+        $this->expectUserDeprecationMessageMatches('/Use the #\[AsContentElement] attribute instead\./');
+
         $annotation = new ContentElement(['category' => 'foobar']);
 
         $this->assertSame(ContentElementReference::TAG_NAME, $annotation->getName());
@@ -41,7 +43,7 @@ class ContentElementTest extends TestCase
                 'renderer' => 'esi',
                 'type' => 'foobar',
             ],
-            $annotation->getAttributes()
+            $annotation->getAttributes(),
         );
     }
 

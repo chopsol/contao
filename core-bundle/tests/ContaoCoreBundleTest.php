@@ -13,21 +13,24 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Tests;
 
 use Contao\CoreBundle\ContaoCoreBundle;
+use Contao\CoreBundle\DependencyInjection\Compiler\AccessDecisionStrategyPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\AddAssetsPackagesPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\AddAvailableTransportsPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\AddCronJobsPass;
-use Contao\CoreBundle\DependencyInjection\Compiler\AddPackagesPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\AddInsertTagsPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\AddNativeTransportFactoryPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\AddResourcesPathsPass;
-use Contao\CoreBundle\DependencyInjection\Compiler\AddSessionBagsPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\ConfigureFilesystemPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\CrawlerPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\DataContainerCallbackPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\IntlInstalledLocalesAndCountriesPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\LoggerChannelPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\MakeServicesPublicPass;
-use Contao\CoreBundle\DependencyInjection\Compiler\MapFragmentsToGlobalsPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\PickerProviderPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\RegisterFragmentsPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\RegisterHookListenersPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\RegisterPagesPass;
-use Contao\CoreBundle\DependencyInjection\Compiler\RemembermeServicesPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\RewireTwigPathsPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\SearchIndexerPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\TaggedMigrationsPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\TranslationDataCollectorPass;
@@ -38,33 +41,42 @@ use Contao\CoreBundle\Event\MenuEvent;
 use Contao\CoreBundle\Event\PreviewUrlConvertEvent;
 use Contao\CoreBundle\Event\PreviewUrlCreateEvent;
 use Contao\CoreBundle\Event\RobotsTxtEvent;
+use Contao\CoreBundle\Event\SitemapEvent;
 use Contao\CoreBundle\Event\SlugValidCharactersEvent;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\SecurityExtension;
 use Symfony\Cmf\Component\Routing\DependencyInjection\Compiler\RegisterRouteEnhancersPass;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\EventDispatcher\DependencyInjection\AddEventAliasesPass;
-use Symfony\Component\HttpKernel\DependencyInjection\FragmentRendererPass;
+use Symfony\Component\HttpFoundation\Request;
 
 class ContaoCoreBundleTest extends TestCase
 {
+    #[RunInSeparateProcess]
+    public function testAddsTheTurboStreamRequestFormatOnBoot(): void
+    {
+        $request = new Request();
+
+        $this->assertNull($request->getMimeType('turbo_stream'));
+
+        (new ContaoCoreBundle())->boot();
+
+        $this->assertSame('text/vnd.turbo-stream.html', $request->getMimeType('turbo_stream'));
+    }
+
     public function testAddsTheCompilerPasses(): void
     {
         $passes = [
             AddEventAliasesPass::class,
             MakeServicesPublicPass::class,
-            AddPackagesPass::class,
             AddAssetsPackagesPass::class,
-            AddSessionBagsPass::class,
             AddResourcesPathsPass::class,
             TaggedMigrationsPass::class,
             PickerProviderPass::class,
             RegisterPagesPass::class,
             RegisterFragmentsPass::class,
             RegisterFragmentsPass::class,
-            FragmentRendererPass::class,
-            RemembermeServicesPass::class,
-            MapFragmentsToGlobalsPass::class,
             DataContainerCallbackPass::class,
             TranslationDataCollectorPass::class,
             RegisterHookListenersPass::class,
@@ -73,17 +85,20 @@ class ContaoCoreBundleTest extends TestCase
             AddCronJobsPass::class,
             AddAvailableTransportsPass::class,
             RegisterRouteEnhancersPass::class,
+            RewireTwigPathsPass::class,
+            AddNativeTransportFactoryPass::class,
+            IntlInstalledLocalesAndCountriesPass::class,
+            LoggerChannelPass::class,
+            ConfigureFilesystemPass::class,
+            AddInsertTagsPass::class,
+            AccessDecisionStrategyPass::class,
         ];
 
         $security = $this->createMock(SecurityExtension::class);
         $security
             ->expects($this->once())
-            ->method('addSecurityListenerFactory')
-            ->with($this->callback(
-                static function ($param) {
-                    return $param instanceof ContaoLoginFactory;
-                }
-            ))
+            ->method('addAuthenticatorFactory')
+            ->with($this->callback(static fn ($param) => $param instanceof ContaoLoginFactory))
         ;
 
         $container = $this->createMock(ContainerBuilder::class);
@@ -100,15 +115,16 @@ class ContaoCoreBundleTest extends TestCase
                             PreviewUrlConvertEvent::class => ContaoCoreEvents::PREVIEW_URL_CONVERT,
                             RobotsTxtEvent::class => ContaoCoreEvents::ROBOTS_TXT,
                             SlugValidCharactersEvent::class => ContaoCoreEvents::SLUG_VALID_CHARACTERS,
+                            SitemapEvent::class => ContaoCoreEvents::SITEMAP,
                         ];
 
                         $this->assertEquals(new AddEventAliasesPass($eventAliases), $pass);
                     }
 
-                    $this->assertContains(\get_class($pass), $passes);
+                    $this->assertContains($pass::class, $passes);
 
                     return true;
-                }
+                },
             ))
         ;
 
@@ -121,27 +137,6 @@ class ContaoCoreBundleTest extends TestCase
 
         $bundle = new ContaoCoreBundle();
         $bundle->build($container);
-    }
-
-    public function testAddsPackagesPassBeforeAssetsPackagesPass(): void
-    {
-        $container = new ContainerBuilder();
-        $container->registerExtension(new SecurityExtension());
-
-        $bundle = new ContaoCoreBundle();
-        $bundle->build($container);
-
-        $classes = [];
-
-        foreach ($container->getCompilerPassConfig()->getPasses() as $pass) {
-            $reflection = new \ReflectionClass($pass);
-            $classes[] = $reflection->getName();
-        }
-
-        $packagesPosition = array_search(AddPackagesPass::class, $classes, true);
-        $assetsPosition = array_search(AddAssetsPackagesPass::class, $classes, true);
-
-        $this->assertTrue($packagesPosition < $assetsPosition);
     }
 
     public function testAddsFragmentsPassBeforeHooksPass(): void

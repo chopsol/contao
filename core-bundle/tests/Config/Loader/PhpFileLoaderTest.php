@@ -14,13 +14,11 @@ namespace Contao\CoreBundle\Tests\Config\Loader;
 
 use Contao\CoreBundle\Config\Loader\PhpFileLoader;
 use Contao\CoreBundle\Tests\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class PhpFileLoaderTest extends TestCase
 {
-    /**
-     * @var PhpFileLoader
-     */
-    private $loader;
+    private PhpFileLoader $loader;
 
     protected function setUp(): void
     {
@@ -33,14 +31,14 @@ class PhpFileLoaderTest extends TestCase
     {
         $this->assertTrue(
             $this->loader->supports(
-                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/config/config.php'
-            )
+                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/config/config.php',
+            ),
         );
 
         $this->assertFalse(
             $this->loader->supports(
-                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/languages/en/default.xlf'
-            )
+                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/languages/en/default.xlf',
+            ),
         );
     }
 
@@ -48,38 +46,24 @@ class PhpFileLoaderTest extends TestCase
     {
         $expects = <<<'EOF'
 
-$GLOBALS['TL_TEST'] = true;
+            $GLOBALS['TL_TEST'] = \true;
 
-EOF;
+            EOF;
 
         $this->assertSame(
             $expects,
-            $this->loader->load($this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/config/config.php')
+            $this->loader->load($this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/config/config.php'),
         );
 
         $content = <<<'EOF'
 
-$GLOBALS['TL_DCA']['tl_test'] = [
-    'config' => [
-        'dataContainer' => 'Table',
-        'sql' => [
-            'keys' => [
-                'id' => 'primary',
-            ],
-        ],
-    ],
-    'fields' => [
-        'id' => [
-            'sql' => "int(10) unsigned NOT NULL auto_increment"
-        ],
-    ],
-];
+            $GLOBALS['TL_DCA']['tl_test'] = ['config' => ['dataContainer' => \Contao\DC_Table::class, 'sql' => ['keys' => ['id' => 'primary']]], 'fields' => ['id' => ['sql' => "int(10) unsigned NOT NULL auto_increment"]]];
 
-EOF;
+            EOF;
 
         $this->assertSame(
             $content,
-            $this->loader->load($this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/tl_test.php')
+            $this->loader->load($this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/tl_test.php'),
         );
     }
 
@@ -87,167 +71,194 @@ EOF;
     {
         $expects = <<<'EOF'
 
-namespace Foo\Bar {
-$GLOBALS['TL_DCA']['tl_test']['config']['dataContainer'] = 'Table';
-}
+            namespace Foo\Bar {
+            $GLOBALS['TL_DCA']['tl_test_with_namespace1']['config']['dataContainer'] = \Contao\DC_Table::class;
+            }
 
-EOF;
+            EOF;
 
         $this->assertSame(
             $expects,
             $this->loader->load(
                 $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/tl_test_with_namespace1.php',
-                'namespaced'
-            )
+                'namespaced',
+            ),
         );
 
         $expects = <<<'EOF'
 
-namespace {
-    $GLOBALS['TL_DCA']['tl_test']['config']['dataContainer'] = 'Table';
-}
+            namespace {
+            $GLOBALS['TL_DCA']['tl_test_with_namespace2']['config']['dataContainer'] = \Contao\DC_Table::class;
+            }
 
-EOF;
+            EOF;
 
         $this->assertSame(
             $expects,
             $this->loader->load(
                 $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/tl_test_with_namespace2.php',
-                'namespaced'
-            )
+                'namespaced',
+            ),
         );
 
         $expects = <<<'EOF'
 
-namespace  {
-$GLOBALS['TL_TEST'] = true;
-}
+            namespace {
+            $GLOBALS['TL_TEST'] = \true;
+            }
 
-EOF;
+            EOF;
 
         $this->assertSame(
             $expects,
             $this->loader->load(
                 $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/languages/en/tl_test.php',
-                'namespaced'
-            )
+                'namespaced',
+            ),
         );
     }
 
-    /**
-     * @dataProvider loadWithDeclareStatementsStrictType
-     */
+    public function testAddsCheckAroundClasses(): void
+    {
+        $expects = <<<'EOF'
+
+            namespace {
+            $GLOBALS['TL_DCA']['tl_test_with_class'] = ['config' => ['dataContainer' => \Contao\DC_Table::class], 'fields' => ['id' => ['sql' => 'int(10) unsigned NOT NULL auto_increment']]];
+            if (!\class_exists(tl_test_with_class::class, false)) {
+                class tl_test_with_class
+                {
+                    public function checkPermission(\Contao\DataContainer $dc)
+                    {
+                    }
+                }
+            }
+            }
+
+            EOF;
+
+        $this->assertSame(
+            $expects,
+            $this->loader->load(
+                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/tl_test_with_class.php',
+                'namespaced',
+            ),
+        );
+
+        $expects = <<<'EOF'
+
+            namespace {
+            $GLOBALS['TL_DCA']['tl_test_with_class'] = ['config' => ['dataContainer' => \Contao\DC_Table::class], 'fields' => ['id' => ['sql' => 'int(10) unsigned NOT NULL auto_increment']]];
+            if (!\class_exists(tl_test_with_classes1::class, false)) {
+                class tl_test_with_classes1
+                {
+                    public function checkPermission(\Contao\DataContainer $dc)
+                    {
+                    }
+                }
+            }
+            if (!\class_exists(tl_test_with_classes2::class, false)) {
+                class tl_test_with_classes2
+                {
+                    public function checkPermission(\Contao\DataContainer $dc)
+                    {
+                    }
+                }
+            }
+            }
+
+            EOF;
+
+        $this->assertSame(
+            $expects,
+            $this->loader->load(
+                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/tl_test_with_classes.php',
+                'namespaced',
+            ),
+        );
+
+        $expects = <<<'EOF'
+
+            namespace Foo\Bar {
+            $GLOBALS['TL_DCA']['tl_test_with_class'] = ['config' => ['dataContainer' => \Contao\DC_Table::class], 'fields' => ['id' => ['sql' => 'int(10) unsigned NOT NULL auto_increment']]];
+            if (!\class_exists(tl_test_with_class_namespaced::class, false)) {
+                class tl_test_with_class_namespaced
+                {
+                    public function checkPermission(\Contao\DataContainer $dc)
+                    {
+                    }
+                }
+            }
+            }
+
+            EOF;
+
+        $this->assertSame(
+            $expects,
+            $this->loader->load(
+                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/tl_test_with_class_namespaced.php',
+                'namespaced',
+            ),
+        );
+    }
+
+    #[DataProvider('loadWithDeclareStatementsStrictType')]
     public function testStripsDeclareStrictTypes(string $file): void
     {
-        $content = <<<'EOF'
+        $content = <<<EOF
 
-$GLOBALS['TL_DCA']['tl_test'] = [
-    'config' => [
-        'dataContainer' => 'Table',
-        'sql' => [
-            'keys' => [
-                'id' => 'primary',
-            ],
-        ],
-    ],
-    'fields' => [
-        'id' => [
-            'sql' => "int(10) unsigned NOT NULL auto_increment"
-        ],
-    ],
-];
+            \$GLOBALS['TL_DCA']['$file'] = ['config' => ['dataContainer' => \\Contao\\DC_Table::class, 'sql' => ['keys' => ['id' => 'primary']]], 'fields' => ['id' => ['sql' => "int(10) unsigned NOT NULL auto_increment"]]];
 
-EOF;
+            EOF;
 
         $this->assertSame(
             $content,
             $this->loader->load(
-                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/'.$file.'.php'
-            )
+                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/'.$file.'.php',
+            ),
         );
     }
 
-    /**
-     * @dataProvider loadWithDeclareStatementsStrictType
-     */
     public function testIgnoresDeclareStatementsInComments(): void
     {
         $content = <<<'EOF'
 
-/**
- * I am a declare(strict_types=1) comment
- */
+            $GLOBALS['TL_DCA']['tl_test_with_declare3'] = ['config' => ['dataContainer' => \Contao\DC_Table::class, 'sql' => ['keys' => ['id' => 'primary']]], 'fields' => ['id' => ['sql' => "int(10) unsigned NOT NULL auto_increment"]]];
 
-
-
-$GLOBALS['TL_DCA']['tl_test'] = [
-    'config' => [
-        'dataContainer' => 'Table',
-        'sql' => [
-            'keys' => [
-                'id' => 'primary',
-            ],
-        ],
-    ],
-    'fields' => [
-        'id' => [
-            'sql' => "int(10) unsigned NOT NULL auto_increment"
-        ],
-    ],
-];
-
-EOF;
+            EOF;
 
         $this->assertSame(
             $content,
             $this->loader->load(
-                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/tl_test_with_declare3.php'
-            )
+                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/tl_test_with_declare3.php',
+            ),
         );
     }
 
-    public function loadWithDeclareStatementsStrictType(): \Generator
+    public static function loadWithDeclareStatementsStrictType(): iterable
     {
         yield ['tl_test_with_declare1'];
         yield ['tl_test_with_declare2'];
     }
 
-    /**
-     * @dataProvider loadWithDeclareStatementsMultipleDefined
-     */
+    #[DataProvider('loadWithDeclareStatementsMultipleDefined')]
     public function testPreservesOtherDeclareDefinitions(string $file): void
     {
-        $content = <<<'EOF'
+        $content = <<<EOF
 
-declare(ticks=1);
+            declare (ticks=1);
+            \$GLOBALS['TL_DCA']['$file'] = ['config' => ['dataContainer' => \\Contao\\DC_Table::class, 'sql' => ['keys' => ['id' => 'primary']]], 'fields' => ['id' => ['sql' => "int(10) unsigned NOT NULL auto_increment"]]];
 
-$GLOBALS['TL_DCA']['tl_test'] = [
-    'config' => [
-        'dataContainer' => 'Table',
-        'sql' => [
-            'keys' => [
-                'id' => 'primary',
-            ],
-        ],
-    ],
-    'fields' => [
-        'id' => [
-            'sql' => "int(10) unsigned NOT NULL auto_increment"
-        ],
-    ],
-];
-
-EOF;
+            EOF;
 
         $this->assertSame(
             $content,
             $this->loader->load(
-                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/'.$file.'.php'
-            )
+                $this->getFixturesDir().'/vendor/contao/test-bundle/Resources/contao/dca/'.$file.'.php',
+            ),
         );
     }
 
-    public function loadWithDeclareStatementsMultipleDefined(): \Generator
+    public static function loadWithDeclareStatementsMultipleDefined(): iterable
     {
         yield ['tl_test_with_declare4'];
         yield ['tl_test_with_declare5'];

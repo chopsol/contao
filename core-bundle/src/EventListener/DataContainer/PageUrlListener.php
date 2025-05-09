@@ -12,83 +12,68 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\EventListener\DataContainer;
 
+use Contao\CoreBundle\DependencyInjection\Attribute\AsCallback;
 use Contao\CoreBundle\Exception\DuplicateAliasException;
+use Contao\CoreBundle\Exception\RouteParametersException;
 use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\CoreBundle\Search\Document;
-use Contao\CoreBundle\Search\Indexer\IndexerInterface;
-use Contao\CoreBundle\ServiceAnnotation\Callback;
+use Contao\CoreBundle\Routing\Page\PageRegistry;
+use Contao\CoreBundle\Routing\Page\PageRoute;
 use Contao\CoreBundle\Slug\Slug;
 use Contao\DataContainer;
 use Contao\Input;
 use Contao\PageModel;
 use Doctrine\DBAL\Connection;
-use Doctrine\DBAL\FetchMode;
-use Nyholm\Psr7\Uri;
-use Symfony\Contracts\Service\ResetInterface;
+use Symfony\Cmf\Component\Routing\NestedMatcher\FinalMatcherInterface;
+use Symfony\Cmf\Component\Routing\RouteObjectInterface;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Routing\Exception\ResourceNotFoundException;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Routing\RouteCollection;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
-class PageUrlListener implements ResetInterface
+/**
+ * @internal
+ */
+class PageUrlListener
 {
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    /**
-     * @var Slug
-     */
-    private $slug;
-
-    /**
-     * @var TranslatorInterface
-     */
-    private $translator;
-
-    /**
-     * @var Connection
-     */
-    private $connection;
-
-    /**
-     * @var IndexerInterface
-     */
-    private $searchIndexer;
-
-    /**
-     * @var array|null
-     */
-    private $prefixes;
-
-    /**
-     * @var array|null
-     */
-    private $suffixes;
-
-    public function __construct(ContaoFramework $framework, Slug $slug, TranslatorInterface $translator, Connection $connection, IndexerInterface $searchIndexer)
-    {
-        $this->framework = $framework;
-        $this->slug = $slug;
-        $this->translator = $translator;
-        $this->connection = $connection;
-        $this->searchIndexer = $searchIndexer;
+    public function __construct(
+        private readonly ContaoFramework $framework,
+        private readonly Slug $slug,
+        private readonly TranslatorInterface $translator,
+        private readonly Connection $connection,
+        private readonly PageRegistry $pageRegistry,
+        private readonly UrlGeneratorInterface $urlGenerator,
+        private readonly FinalMatcherInterface $routeMatcher,
+    ) {
     }
 
-    /**
-     * @Callback(table="tl_page", target="fields.alias.save")
-     */
+    #[AsCallback(table: 'tl_page', target: 'fields.alias.save')]
     public function generateAlias(string $value, DataContainer $dc): string
     {
-        /** @var PageModel $pageAdapter */
         $pageAdapter = $this->framework->getAdapter(PageModel::class);
 
-        /** @var PageModel $pageModel */
-        $pageModel = $pageAdapter->findWithDetails($dc->id);
+        if (!$pageModel = $pageAdapter->findWithDetails($dc->id)) {
+            return $value;
+        }
+
+        $this->addInputToPage($pageModel);
+        $isRoutable = $this->pageRegistry->isRoutable($pageModel);
 
         if ('' !== $value) {
-            try {
-                $this->aliasExists($value, (int) $pageModel->id, $pageModel, true);
-            } catch (DuplicateAliasException $exception) {
-                throw new \RuntimeException($this->translator->trans('ERR.pageUrlExists', [$exception->getUrl()], 'contao_default'), $exception->getCode(), $exception);
+            if (preg_match('/^[1-9]\d*$/', $value)) {
+                throw new \RuntimeException($this->translator->trans('ERR.aliasNumeric', [], 'contao_default'));
+            }
+
+            if ($isRoutable) {
+                try {
+                    $this->aliasExists($value, $pageModel, true);
+                } catch (DuplicateAliasException $exception) {
+                    if ($pageModel = $exception->getPageModel()) {
+                        throw new \RuntimeException($this->translator->trans('ERR.pageUrlNameExists', [$pageModel->title, $pageModel->id], 'contao_default'), $exception->getCode(), $exception);
+                    }
+
+                    throw new \RuntimeException($this->translator->trans('ERR.pageUrlExists', [$exception->getUrl()], 'contao_default'), $exception->getCode(), $exception);
+                }
             }
 
             return $value;
@@ -96,11 +81,9 @@ class PageUrlListener implements ResetInterface
 
         // Generate an alias if there is none
         $value = $this->slug->generate(
-            $dc->activeRecord->title,
-            $dc->activeRecord->id,
-            function ($alias) use ($pageModel) {
-                return $this->aliasExists(($pageModel->useFolderUrl ? $pageModel->folderUrl : '').$alias, (int) $pageModel->id, $pageModel);
-            }
+            $pageModel->title ?? '',
+            (int) $dc->id,
+            fn ($alias) => $isRoutable && $this->aliasExists(($pageModel->useFolderUrl ? $pageModel->folderUrl : '').$alias, $pageModel),
         );
 
         // Generate folder URL aliases (see #4933)
@@ -111,65 +94,44 @@ class PageUrlListener implements ResetInterface
         return $value;
     }
 
-    /**
-     * @Callback(table="tl_page", target="fields.alias.save")
-     */
-    public function purgeSearchIndexOnAliasChange(string $value, DataContainer $dc): string
-    {
-        if ($value === $dc->activeRecord->alias) {
-            return $value;
-        }
-
-        $this->purgeSearchIndex((int) $dc->id);
-
-        return $value;
-    }
-
-    /**
-     * @Callback(table="tl_page", target="config.ondelete", priority=16)
-     */
-    public function purgeSearchIndexOnDelete(DataContainer $dc): void
-    {
-        if (!$dc->id) {
-            return;
-        }
-
-        $this->purgeSearchIndex((int) $dc->id);
-    }
-
-    /**
-     * @Callback(table="tl_page", target="fields.urlPrefix.save")
-     */
+    #[AsCallback(table: 'tl_page', target: 'fields.urlPrefix.save')]
     public function validateUrlPrefix(string $value, DataContainer $dc): string
     {
-        if ('root' !== $dc->activeRecord->type || $dc->activeRecord->urlPrefix === $value) {
+        $currentRecord = $dc->getCurrentRecord();
+
+        if ('root' !== ($currentRecord['type'] ?? null) || ($currentRecord['urlPrefix'] ?? null) === $value) {
             return $value;
         }
 
-        // First check if another root page uses the same url prefix and domain
-        $count = $this->connection
-            ->executeQuery(
-                "SELECT COUNT(*) FROM tl_page WHERE urlPrefix=:urlPrefix AND dns=:dns AND id!=:rootId AND type='root'",
-                [
-                    'urlPrefix' => $value,
-                    'dns' => $dc->activeRecord->dns,
-                    'rootId' => $dc->id,
-                ]
-            )
-            ->fetchColumn()
-        ;
+        // First, check if another root page uses the same url prefix and domain
+        $count = $this->connection->fetchOne(
+            <<<'SQL'
+                SELECT COUNT(*)
+                FROM tl_page
+                WHERE
+                    urlPrefix = :urlPrefix
+                    AND dns = :dns
+                    AND id != :rootId
+                    AND type = 'root'
+                SQL,
+            [
+                'urlPrefix' => $value,
+                'dns' => $currentRecord['dns'] ?? null,
+                'rootId' => $dc->id,
+            ],
+        );
 
         if ($count > 0) {
             throw new \RuntimeException($this->translator->trans('ERR.urlPrefixExists', [$value], 'contao_default'));
         }
 
-        /** @var PageModel $pageAdapter */
         $pageAdapter = $this->framework->getAdapter(PageModel::class);
-        $rootPage = $pageAdapter->findByPk($dc->id);
 
-        if (null === $rootPage) {
+        if (!$rootPage = $pageAdapter->findWithDetails($dc->id)) {
             return $value;
         }
+
+        $this->addInputToPage($rootPage);
 
         try {
             $this->recursiveValidatePages((int) $rootPage->id, $rootPage);
@@ -180,22 +142,22 @@ class PageUrlListener implements ResetInterface
         return $value;
     }
 
-    /**
-     * @Callback(table="tl_page", target="fields.urlSuffix.save")
-     */
-    public function validateUrlSuffix($value, DataContainer $dc)
+    #[AsCallback(table: 'tl_page', target: 'fields.urlSuffix.save')]
+    public function validateUrlSuffix(mixed $value, DataContainer $dc): mixed
     {
-        if ('root' !== $dc->activeRecord->type || $dc->activeRecord->urlSuffix === $value) {
+        $currentRecord = $dc->getCurrentRecord();
+
+        if ('root' !== ($currentRecord['type'] ?? null) || ($currentRecord['urlSuffix'] ?? null) === $value) {
             return $value;
         }
 
-        /** @var PageModel $pageAdapter */
         $pageAdapter = $this->framework->getAdapter(PageModel::class);
-        $rootPage = $pageAdapter->findByPk($dc->id);
 
-        if (null === $rootPage) {
+        if (!$rootPage = $pageAdapter->findWithDetails($dc->id)) {
             return $value;
         }
+
+        $this->addInputToPage($rootPage);
 
         try {
             $this->recursiveValidatePages((int) $rootPage->id, $rootPage);
@@ -206,41 +168,23 @@ class PageUrlListener implements ResetInterface
         return $value;
     }
 
-    public function reset(): void
-    {
-        $this->prefixes = null;
-        $this->suffixes = null;
-    }
-
-    public function purgeSearchIndex(int $pageId): void
-    {
-        $urls = $this->connection
-            ->executeQuery(
-                'SELECT url FROM tl_search WHERE pid=:pageId',
-                ['pageId' => $pageId]
-            )
-            ->fetchAll(FetchMode::COLUMN)
-        ;
-
-        foreach ($urls as $url) {
-            $this->searchIndexer->delete(new Document(new Uri($url), 200));
-        }
-    }
-
     private function recursiveValidatePages(int $pid, PageModel $rootPage): void
     {
-        /** @var PageModel $pageAdapter */
         $pageAdapter = $this->framework->getAdapter(PageModel::class);
-        $pages = $pageAdapter->findByPid($pid);
 
-        if (null === $pages) {
+        if (!$pages = $pageAdapter->findByPid($pid)) {
             return;
         }
 
-        /** @var PageModel $page */
         foreach ($pages as $page) {
-            if ($page->alias) {
-                $this->aliasExists($page->alias, (int) $page->id, $rootPage, true);
+            if ($page->alias && $this->pageRegistry->isRoutable($page)) {
+                // Inherit root page settings from post data
+                $page->loadDetails();
+                $page->domain = $rootPage->domain;
+                $page->urlPrefix = $rootPage->urlPrefix;
+                $page->urlSuffix = $rootPage->urlSuffix;
+
+                $this->aliasExists($page->alias, $page, true);
             }
 
             $this->recursiveValidatePages((int) $page->id, $rootPage);
@@ -250,154 +194,123 @@ class PageUrlListener implements ResetInterface
     /**
      * @throws DuplicateAliasException
      */
-    private function aliasExists(string $currentAlias, int $currentId, PageModel $currentPage, bool $throw = false): bool
+    private function aliasExists(string $currentAlias, PageModel $currentPage, bool $throw = false): bool
     {
+        // We can safely modify the page model since loadDetails() detaches it from the
+        // registry and calls preventSaving()
         $currentPage->loadDetails();
+        $currentPage->alias = $currentAlias;
 
-        $currentDomain = $currentPage->domain;
-        $currentPrefix = $currentPage->urlPrefix;
-        $currentSuffix = $currentPage->urlSuffix;
+        // Route must be created again from PageModel because alias changed
+        $currentRoute = $this->pageRegistry->getRoute($currentPage);
 
-        if ('root' === $currentPage->type) {
-            /** @var Input $input */
-            $input = $this->framework->getAdapter(Input::class);
-
-            if (null !== ($dns = $input->post('dns'))) {
-                $currentDomain = $dns;
-            }
-
-            if (null !== ($urlPrefix = $input->post('urlPrefix'))) {
-                $currentPrefix = $urlPrefix;
-            }
-
-            if (null !== ($urlSuffix = $input->post('urlSuffix'))) {
-                $currentSuffix = $urlSuffix;
-            }
+        try {
+            $currentUrl = $this->urlGenerator->generate(
+                PageRoute::PAGE_BASED_ROUTE_NAME,
+                [RouteObjectInterface::ROUTE_OBJECT => $currentRoute],
+                UrlGeneratorInterface::ABSOLUTE_URL,
+            );
+        } catch (RouteParametersException) {
+            // This route has mandatory parameters, only match exact path with placeholders
+            $currentUrl = null;
         }
 
-        $aliasIds = $this->connection
-            ->executeQuery(
-                'SELECT id FROM tl_page WHERE alias LIKE :alias AND id!=:id',
-                [
-                    'alias' => '%'.$this->stripPrefixesAndSuffixes($currentAlias, $currentPrefix, $currentSuffix).'%',
-                    'id' => $currentId,
-                ]
-            )
-            ->fetchAll(FetchMode::COLUMN)
-        ;
-
-        if (0 === \count($aliasIds)) {
+        if (!$aliasPages = $this->framework->getAdapter(PageModel::class)->findSimilarByAlias($currentPage)) {
             return false;
         }
 
-        /** @var PageModel $pageAdapter */
-        $pageAdapter = $this->framework->getAdapter(PageModel::class);
-        $currentUrl = $this->buildUrl($currentAlias, $currentPrefix, $currentSuffix);
+        $routeCollection = new RouteCollection();
 
-        foreach ($aliasIds as $aliasId) {
-            $aliasPage = $pageAdapter->findWithDetails($aliasId);
-
-            if (null === $aliasPage) {
+        foreach ($aliasPages as $aliasPage) {
+            if (!$this->pageRegistry->isRoutable($aliasPage)) {
                 continue;
             }
 
-            $aliasDomain = $aliasPage->domain;
-            $aliasPrefix = $aliasPage->urlPrefix;
-            $aliasSuffix = $aliasPage->urlSuffix;
-
+            // If page has the same root, inherit root page settings from post data
             if ($currentPage->rootId === $aliasPage->rootId) {
-                $aliasDomain = $currentDomain;
-                $aliasPrefix = $currentPrefix;
-                $aliasSuffix = $currentSuffix;
+                $aliasPage->loadDetails();
+                $aliasPage->domain = $currentPage->domain;
+                $aliasPage->urlPrefix = $currentPage->urlPrefix;
+                $aliasPage->urlSuffix = $currentPage->urlSuffix;
             }
 
-            $aliasUrl = $this->buildUrl($aliasPage->alias, $aliasPrefix, $aliasSuffix);
+            $aliasRoute = $this->pageRegistry->getRoute($aliasPage);
 
-            if ($currentDomain !== $aliasDomain || $currentUrl !== $aliasUrl) {
-                continue;
-            }
+            // Even if we cannot generate the path because of parameter requirements, two
+            // pages can never have the same path AND the same requirements. This could be
+            // two regular pages with same alias and "requireItem" enabled.
+            if (
+                null === $currentUrl
+                && $currentRoute->getPath() === $aliasRoute->getPath()
+                && $currentRoute->getHost() === $aliasRoute->getHost()
+                && 0 === ($currentRoute->getRequirements() <=> $aliasRoute->getRequirements())
+            ) {
+                if ($throw) {
+                    $exception = new DuplicateAliasException($currentRoute->getPath());
+                    $exception->setPageModel($aliasPage);
 
-            // Duplicate alias found
-            if ($throw) {
-                throw new DuplicateAliasException($currentUrl);
-            }
-
-            return true;
-        }
-
-        return false;
-    }
-
-    private function buildUrl(string $alias, string $urlPrefix, string $urlSuffix): string
-    {
-        $url = '/'.$alias.$urlSuffix;
-
-        if ($urlPrefix) {
-            $url = '/'.$urlPrefix.$url;
-        }
-
-        return $url;
-    }
-
-    private function stripPrefixesAndSuffixes(string $alias, string $urlPrefix, string $urlSuffix): string
-    {
-        if (null === $this->prefixes || null === $this->suffixes) {
-            $this->prefixes = [];
-            $this->suffixes = [];
-
-            $rows = $this->connection
-                ->executeQuery("SELECT urlPrefix, urlSuffix FROM tl_page WHERE type='root'")
-                ->fetchAll()
-            ;
-
-            if (0 === ($prefixLength = \strlen($urlPrefix))) {
-                $this->prefixes = array_column($rows, 'urlPrefix');
-            } else {
-                foreach (array_column($rows, 'urlPrefix') as $prefix) {
-                    if (0 === substr_compare($prefix, $urlPrefix, 0, $prefixLength, true)) {
-                        $prefix = trim(substr($prefix, $prefixLength), '/');
-
-                        if ('' !== $prefix) {
-                            $this->prefixes[] = $prefix.'/';
-                        }
-                    }
+                    throw $exception;
                 }
+
+                return true;
             }
 
-            if (0 === ($suffixLength = \strlen($urlSuffix))) {
-                $this->suffixes = array_column($rows, 'urlSuffix');
-            } else {
-                foreach (array_column($rows, 'urlSuffix') as $suffix) {
-                    if (0 === substr_compare($suffix, $urlSuffix, -$suffixLength, $suffixLength, true)) {
-                        $this->suffixes[] = substr($suffix, 0, -$suffixLength);
-                    }
-                }
+            $routeCollection->add('tl_page.'.$aliasPage->id, $aliasRoute);
+        }
+
+        if (null === $currentUrl || 0 === $routeCollection->count()) {
+            return false;
+        }
+
+        $request = Request::create($currentUrl);
+
+        try {
+            $attributes = $this->routeMatcher->finalMatch($routeCollection, $request);
+        } catch (ResourceNotFoundException) {
+            return false;
+        }
+
+        if ($throw) {
+            $exception = new DuplicateAliasException($currentUrl);
+
+            if ($attributes['pageModel'] instanceof PageModel) {
+                $exception->setPageModel($attributes['pageModel']);
             }
+
+            throw $exception;
         }
 
-        if (null !== ($prefixRegex = $this->regexArray($this->prefixes))) {
-            $alias = preg_replace('/^'.$prefixRegex.'/i', '', $alias);
-        }
-
-        if (null !== ($suffixRegex = $this->regexArray($this->suffixes))) {
-            $alias = preg_replace('/'.$suffixRegex.'$/i', '', $alias);
-        }
-
-        return $alias;
+        return true;
     }
 
-    private function regexArray(array $data, string $delimiter = '/'): ?string
+    private function addInputToPage(PageModel $pageModel): void
     {
-        $data = array_filter(array_unique($data));
+        $input = $this->framework->getAdapter(Input::class);
 
-        if (0 === \count($data)) {
-            return null;
+        if (null !== ($type = $input->post('type'))) {
+            $pageModel->type = $type;
         }
 
-        foreach ($data as $k => $v) {
-            $data[$k] = preg_quote($v, $delimiter);
+        if (null !== ($title = $input->post('title'))) {
+            $pageModel->title = $title;
         }
 
-        return '('.implode('|', $data).')';
+        if (null !== ($requireItem = $input->post('requireItem'))) {
+            $pageModel->requireItem = (bool) $requireItem;
+        }
+
+        if ('root' === $pageModel->type) {
+            if (null !== ($dns = $input->post('dns'))) {
+                $pageModel->domain = $dns;
+            }
+
+            if (null !== ($urlPrefix = $input->post('urlPrefix'))) {
+                $pageModel->urlPrefix = $urlPrefix;
+            }
+
+            if (null !== ($urlSuffix = $input->post('urlSuffix'))) {
+                $pageModel->urlSuffix = $urlSuffix;
+            }
+        }
     }
 }

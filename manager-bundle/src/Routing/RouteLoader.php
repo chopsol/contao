@@ -16,41 +16,21 @@ use Contao\ManagerPlugin\PluginLoader;
 use Contao\ManagerPlugin\Routing\RoutingPluginInterface;
 use Symfony\Bundle\FrameworkBundle\Routing\RouteLoaderInterface;
 use Symfony\Component\Config\Loader\LoaderInterface;
+use Symfony\Component\Filesystem\Path;
 use Symfony\Component\HttpKernel\KernelInterface;
 use Symfony\Component\Routing\RouteCollection;
-use Webmozart\PathUtil\Path;
 
 class RouteLoader implements RouteLoaderInterface
 {
     /**
-     * @var LoaderInterface
+     * @internal
      */
-    private $loader;
-
-    /**
-     * @var PluginLoader
-     */
-    private $pluginLoader;
-
-    /**
-     * @var KernelInterface
-     */
-    private $kernel;
-
-    /**
-     * @var string
-     */
-    private $projectDir;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao_manager.routing_loader" service instead
-     */
-    public function __construct(LoaderInterface $loader, PluginLoader $pluginLoader, KernelInterface $kernel, string $projectDir)
-    {
-        $this->loader = $loader;
-        $this->pluginLoader = $pluginLoader;
-        $this->kernel = $kernel;
-        $this->projectDir = $projectDir;
+    public function __construct(
+        private readonly LoaderInterface $loader,
+        private readonly PluginLoader $pluginLoader,
+        private readonly KernelInterface $kernel,
+        private readonly string $projectDir,
+    ) {
     }
 
     /**
@@ -58,6 +38,24 @@ class RouteLoader implements RouteLoaderInterface
      */
     public function loadFromPlugins(): RouteCollection
     {
+        $collection = new RouteCollection();
+
+        // Load the routing.yaml file first if it exists, so it takes precedence over all
+        // other routes (see #2718)
+        if ($configFile = $this->getConfigFile()) {
+            $routes = $this->loader->getResolver()->resolve($configFile)->load($configFile);
+
+            if ($routes instanceof RouteCollection) {
+                $collection->addCollection($routes);
+            }
+        } elseif (is_dir($path = Path::join($this->projectDir, 'src/Controller'))) {
+            $routes = $this->loader->getResolver()->resolve($path)->load($path);
+
+            if ($routes instanceof RouteCollection) {
+                $collection->addCollection($routes);
+            }
+        }
+
         $collection = array_reduce(
             $this->pluginLoader->getInstancesOf(PluginLoader::ROUTING_PLUGINS, true),
             function (RouteCollection $collection, RoutingPluginInterface $plugin): RouteCollection {
@@ -69,17 +67,8 @@ class RouteLoader implements RouteLoaderInterface
 
                 return $collection;
             },
-            new RouteCollection()
+            $collection,
         );
-
-        // Load the routing.yml file if it exists
-        if ($configFile = $this->getConfigFile()) {
-            $routes = $this->loader->getResolver()->resolve($configFile)->load($configFile);
-
-            if ($routes instanceof RouteCollection) {
-                $collection->addCollection($routes);
-            }
-        }
 
         // Make sure the Contao frontend routes are always loaded last
         foreach (['contao_frontend', 'contao_index', 'contao_root', 'contao_catch_all'] as $name) {
@@ -91,29 +80,16 @@ class RouteLoader implements RouteLoaderInterface
         return $collection;
     }
 
-    private function getConfigFile(): ?string
+    private function getConfigFile(): string|null
     {
-        foreach (['routes.yaml', 'routes.yml', 'routing.yaml', 'routing.yml'] as $file) {
-            $path = Path::join($this->projectDir, 'config', $file);
-
-            if (file_exists($path)) {
-                if ('routing' === Path::getFilenameWithoutExtension($file)) {
-                    trigger_deprecation('contao/manager-bundle', '4.9', sprintf('Using a "%s" file has been deprecated and will no longer work in Contao 5.0. Rename it to "routes.yaml" instead.', $file));
-                }
-
-                return $path;
-            }
+        if (file_exists($path = Path::join($this->projectDir, 'config/routes.yaml'))) {
+            return $path;
         }
 
-        // Fallback to the legacy config file (see #566)
-        foreach (['routes.yaml', 'routes.yml', 'routing.yaml', 'routing.yml'] as $file) {
-            $path = Path::join($this->projectDir, 'app/config', $file);
+        if (file_exists($path = Path::join($this->projectDir, 'config/routes.yml'))) {
+            trigger_deprecation('contao/manager-bundle', '5.0', 'Using a routes.yml file has been deprecated and will no longer work in Contao 6. Use a routes.yaml file instead.');
 
-            if (file_exists($path)) {
-                trigger_deprecation('contao/manager-bundle', '4.9', sprintf('Storing the "%s" file in the "app/config" folder has been deprecated and will no longer work in Contao 5.0. Move it to the "config" folder instead.', $file));
-
-                return $path;
-            }
+            return $path;
         }
 
         return null;

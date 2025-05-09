@@ -14,9 +14,12 @@ namespace Contao\CoreBundle\Tests\Command;
 
 use Contao\CoreBundle\Command\CrawlCommand;
 use Contao\CoreBundle\Crawl\Escargot\Factory;
+use Contao\CoreBundle\Tests\TestCase;
 use Nyholm\Psr7\Uri;
 use PHPUnit\Framework\MockObject\MockObject;
-use PHPUnit\Framework\TestCase;
+use Symfony\Component\Console\Exception\InvalidArgumentException;
+use Symfony\Component\Console\Helper\ProgressBar;
+use Symfony\Component\Console\Terminal;
 use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -24,12 +27,20 @@ use Terminal42\Escargot\BaseUriCollection;
 use Terminal42\Escargot\Escargot;
 use Terminal42\Escargot\Exception\InvalidJobIdException;
 use Terminal42\Escargot\Queue\InMemoryQueue;
+use Terminal42\Escargot\Queue\LazyQueue;
 
 class CrawlCommandTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        $this->resetStaticProperties([ProgressBar::class, Terminal::class]);
+
+        parent::tearDown();
+    }
+
     public function testAbortsWithInvalidJobId(): void
     {
-        $escargotFactory = $this->createInvalidEscargotFactory(new InvalidJobIdException(), true);
+        $escargotFactory = $this->mockInvalidEscargotFactory(new InvalidJobIdException(), true);
         $command = new CrawlCommand($escargotFactory, new Filesystem());
 
         $tester = new CommandTester($command);
@@ -41,7 +52,7 @@ class CrawlCommandTest extends TestCase
 
     public function testAbortsIfEscargotCouldNotBeInstantiated(): void
     {
-        $escargotFactory = $this->createInvalidEscargotFactory(new \InvalidArgumentException('Something went wrong!'));
+        $escargotFactory = $this->mockInvalidEscargotFactory(new InvalidArgumentException('Something went wrong!'));
         $command = new CrawlCommand($escargotFactory, new Filesystem());
 
         $tester = new CommandTester($command);
@@ -57,22 +68,22 @@ class CrawlCommandTest extends TestCase
         $client = new MockHttpClient();
 
         // Test defaults
-        $escargot = Escargot::create($this->createBaseUriCollection(), new InMemoryQueue())->withHttpClient($client);
-        $escargotFactory = $this->createValidEscargotFactory($escargot);
+        $escargot = Escargot::create($this->getBaseUriCollection(), new InMemoryQueue())->withHttpClient($client);
+        $escargotFactory = $this->mockValidEscargotFactory($escargot);
         $command = new CrawlCommand($escargotFactory, new Filesystem());
 
         $tester = new CommandTester($command);
         $code = $tester->execute([]);
 
         $this->assertSame(0, $code);
-        $this->assertSame(10, $command->getEscargot()->getConcurrency());
+        $this->assertSame(5, $command->getEscargot()->getConcurrency());
         $this->assertSame(0, $command->getEscargot()->getRequestDelay());
         $this->assertSame(0, $command->getEscargot()->getMaxRequests());
-        $this->assertSame(0, $command->getEscargot()->getMaxDepth());
+        $this->assertSame(3, $command->getEscargot()->getMaxDepth());
 
         // Test options
-        $escargot = Escargot::create($this->createBaseUriCollection(), new InMemoryQueue())->withHttpClient($client);
-        $escargotFactory = $this->createValidEscargotFactory($escargot);
+        $escargot = Escargot::create($this->getBaseUriCollection(), new InMemoryQueue())->withHttpClient($client);
+        $escargotFactory = $this->mockValidEscargotFactory($escargot);
         $command = new CrawlCommand($escargotFactory, new Filesystem());
 
         $tester = new CommandTester($command);
@@ -85,6 +96,58 @@ class CrawlCommandTest extends TestCase
         $this->assertSame(20, $command->getEscargot()->getMaxDepth());
     }
 
+    public function testSubsequentCrawlCommandsWithDoctrineQueue(): void
+    {
+        $client = new MockHttpClient();
+        $queue = new InMemoryQueue();
+        $jobId = null;
+
+        $escargotFactory = $this->createMock(Factory::class);
+        $escargotFactory
+            ->expects($this->exactly(2))
+            ->method('getCrawlUriCollection')
+            ->willReturn($this->getBaseUriCollection())
+        ;
+
+        $escargotFactory
+            ->expects($this->once())
+            ->method('create')
+            ->willReturnCallback(
+                function () use ($queue, $client, &$jobId) {
+                    $escargot = Escargot::create($this->getBaseUriCollection(), $queue)->withHttpClient($client);
+                    $jobId = $escargot->getJobId();
+
+                    return $escargot;
+                },
+            )
+        ;
+
+        $escargotFactory
+            ->expects($this->exactly(2))
+            ->method('createLazyQueue')
+            ->willReturn(new LazyQueue(new InMemoryQueue(), $queue))
+        ;
+
+        $escargotFactory
+            ->expects($this->once())
+            ->method('createFromJobId')
+            ->willReturnCallback(static fn (string $jobId) => Escargot::createFromJobId($jobId, $queue)->withHttpClient($client))
+        ;
+
+        $command = new CrawlCommand($escargotFactory, new Filesystem());
+
+        $tester = new CommandTester($command);
+        $tester->execute(['--queue' => 'doctrine']);
+
+        $expectCli = \sprintf('[Job ID: %s]', $jobId);
+
+        $this->assertStringContainsString($expectCli, $tester->getDisplay(true));
+
+        $tester->execute(['--queue' => 'doctrine', 'job' => $jobId]);
+
+        $this->assertStringContainsString($expectCli, $tester->getDisplay(true));
+    }
+
     public function testEmitsWarningIfLocalhostIsInCollection(): void
     {
         // Make sure we never execute real requests
@@ -93,7 +156,7 @@ class CrawlCommandTest extends TestCase
         $baseUriCollection = new BaseUriCollection([new Uri('http://localhost')]);
 
         $escargot = Escargot::create($baseUriCollection, new InMemoryQueue())->withHttpClient($client);
-        $escargotFactory = $this->createValidEscargotFactory($escargot, $baseUriCollection);
+        $escargotFactory = $this->mockValidEscargotFactory($escargot, $baseUriCollection);
         $command = new CrawlCommand($escargotFactory, new Filesystem());
 
         $tester = new CommandTester($command);
@@ -103,19 +166,14 @@ class CrawlCommandTest extends TestCase
         $this->assertStringContainsString('[WARNING] You are going to crawl localhost URIs.', $tester->getDisplay(true));
     }
 
-    private function createBaseUriCollection(): BaseUriCollection
+    private function getBaseUriCollection(): BaseUriCollection
     {
         return new BaseUriCollection([new Uri('https://contao.org')]);
     }
 
-    /**
-     * @return Factory&MockObject
-     */
-    private function createEscargotFactory(BaseUriCollection $baseUriCollection = null): Factory
+    private function mockEscargotFactory(BaseUriCollection|null $baseUriCollection = null): Factory&MockObject
     {
-        if (null === $baseUriCollection) {
-            $baseUriCollection = $this->createBaseUriCollection();
-        }
+        $baseUriCollection ??= $this->getBaseUriCollection();
 
         $escargotFactory = $this->createMock(Factory::class);
         $escargotFactory
@@ -127,12 +185,9 @@ class CrawlCommandTest extends TestCase
         return $escargotFactory;
     }
 
-    /**
-     * @return Factory&MockObject
-     */
-    private function createValidEscargotFactory(Escargot $escargot, BaseUriCollection $baseUriCollection = null): Factory
+    private function mockValidEscargotFactory(Escargot $escargot, BaseUriCollection|null $baseUriCollection = null): Factory&MockObject
     {
-        $escargotFactory = $this->createEscargotFactory($baseUriCollection);
+        $escargotFactory = $this->mockEscargotFactory($baseUriCollection);
         $escargotFactory
             ->expects($this->once())
             ->method('create')
@@ -147,12 +202,9 @@ class CrawlCommandTest extends TestCase
         return $escargotFactory;
     }
 
-    /**
-     * @return Factory&MockObject
-     */
-    private function createInvalidEscargotFactory(\Exception $exception, bool $withExistingJobId = false): Factory
+    private function mockInvalidEscargotFactory(\Exception $exception, bool $withExistingJobId = false): Factory&MockObject
     {
-        $escargotFactory = $this->createEscargotFactory();
+        $escargotFactory = $this->mockEscargotFactory();
 
         if ($withExistingJobId) {
             $escargotFactory
@@ -164,6 +216,11 @@ class CrawlCommandTest extends TestCase
             $escargotFactory
                 ->expects($this->never())
                 ->method('create')
+            ;
+
+            $escargotFactory
+                ->expects($this->never())
+                ->method('createLazyQueue')
             ;
 
             return $escargotFactory;

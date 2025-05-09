@@ -15,103 +15,65 @@ namespace Contao\CoreBundle\Tests\Monolog;
 use Contao\CoreBundle\Monolog\ContaoContext;
 use Contao\CoreBundle\Monolog\ContaoTableHandler;
 use Contao\CoreBundle\Tests\TestCase;
-use Contao\System;
 use Doctrine\DBAL\Connection;
-use Doctrine\DBAL\Statement;
+use Monolog\Level;
 use Monolog\Logger;
+use Monolog\LogRecord;
 
 class ContaoTableHandlerTest extends TestCase
 {
-    public function testSupportsReadingAndWritingTheDbalServiceName(): void
-    {
-        $handler = new ContaoTableHandler();
-
-        $this->assertSame('doctrine.dbal.default_connection', $handler->getDbalServiceName());
-
-        $handler->setDbalServiceName('foobar');
-
-        $this->assertSame('foobar', $handler->getDbalServiceName());
-    }
-
-    /**
-     * @group legacy
-     *
-     * @expectedDeprecation Since contao/core-bundle 4.0: Using the "addLogEntry" hook has been deprecated %s.
-     */
     public function testHandlesContaoRecords(): void
     {
-        $record = [
-            'level' => Logger::DEBUG,
-            'extra' => ['contao' => new ContaoContext('foobar')],
-            'context' => [],
-            'datetime' => new \DateTime(),
-            'message' => 'foobar',
-        ];
-
-        $statement = $this->createMock(Statement::class);
-        $statement
-            ->expects($this->once())
-            ->method('execute')
-        ;
-
         $connection = $this->createMock(Connection::class);
         $connection
-            ->method('prepare')
-            ->willReturn($statement)
+            ->expects($this->once())
+            ->method('insert')
+            ->willReturn(1)
         ;
 
-        $system = $this->mockConfiguredAdapter(['importStatic' => $this]);
-
-        $container = $this->getContainerWithContaoConfiguration();
-        $container->set('contao.framework', $this->mockContaoFramework([System::class => $system]));
-        $container->set('doctrine.dbal.default_connection', $connection);
-
-        $GLOBALS['TL_HOOKS']['addLogEntry'][] = [static::class, 'addLogEntry'];
-
-        $handler = new ContaoTableHandler();
-        $handler->setContainer($container);
+        $handler = new ContaoTableHandler(static fn () => $connection);
+        $record = $this->getRecord(['contao' => new ContaoContext('foobar')]);
 
         $this->assertFalse($handler->handle($record));
-    }
-
-    public function addLogEntry(): void
-    {
-        // Dummy method to test the addLogEntry hook
     }
 
     public function testDoesNotHandleARecordIfTheLogLevelDoesNotMatch(): void
     {
-        $handler = new ContaoTableHandler();
+        $record = $this->getRecord([]);
+
+        $connection = $this->createMock(Connection::class);
+        $connection
+            ->expects($this->never())
+            ->method('insert')
+        ;
+
+        $handler = new ContaoTableHandler(static fn () => $connection);
         $handler->setLevel(Logger::INFO);
 
-        $this->assertFalse($handler->handle(['level' => Logger::DEBUG]));
+        $this->assertFalse($handler->handle($record));
     }
 
     public function testDoesNotHandleARecordWithoutContaoContext(): void
     {
-        $record = [
-            'level' => Logger::DEBUG,
-            'extra' => ['contao' => null],
-            'context' => [],
-        ];
+        $record = $this->getRecord(['contao' => null]);
 
-        $handler = new ContaoTableHandler();
+        $connection = $this->createMock(Connection::class);
+        $connection
+            ->expects($this->never())
+            ->method('insert')
+        ;
+
+        $handler = new ContaoTableHandler(static fn () => $connection);
 
         $this->assertFalse($handler->handle($record));
     }
 
-    public function testDoesNotHandleTheRecordIfThereIsNoContainer(): void
+    /**
+     * The Contao context was moved to the "extra" section by the processor, so pass
+     * it as sixth argument to the LogRecord class.
+     */
+    private function getRecord(array $context): LogRecord
     {
-        $record = [
-            'level' => Logger::DEBUG,
-            'extra' => ['contao' => new ContaoContext('foobar')],
-            'context' => [],
-            'datetime' => new \DateTime(),
-            'message' => 'foobar',
-        ];
-
-        $handler = new ContaoTableHandler();
-
-        $this->assertFalse($handler->handle($record));
+        return new LogRecord(new \DateTimeImmutable(), 'test', Level::Debug, 'foobar', [], $context);
     }
 }

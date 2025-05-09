@@ -13,14 +13,13 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Tests\OptIn;
 
 use Contao\CoreBundle\OptIn\OptIn;
+use Contao\CoreBundle\Tests\TestCase;
 use Contao\MemberModel;
 use Contao\Model;
 use Contao\Model\Collection;
 use Contao\OptInModel;
-use Contao\TestCase\ContaoTestCase;
-use PHPUnit\Framework\MockObject\MockObject;
 
-class OptInTest extends ContaoTestCase
+class OptInTest extends TestCase
 {
     public function testCreatesAToken(): void
     {
@@ -68,7 +67,6 @@ class OptInTest extends ContaoTestCase
 
     public function testFindsAToken(): void
     {
-        /** @var OptInModel&MockObject $model */
         $model = $this->mockClassWithProperties(OptInModel::class);
         $model->token = 'foobar';
 
@@ -86,12 +84,13 @@ class OptInTest extends ContaoTestCase
         $this->assertNull((new OptIn($framework))->find('barfoo'));
     }
 
-    /**
-     * @dataProvider getExpiredTokens
-     */
-    public function testPurgesExpiredTokens(string $method, ?Collection $model): void
+    public function testPurgesExpiredTokens(): void
     {
-        $token = $this->createMock(OptInModel::class);
+        $properties = [
+            'confirmedOn' => strtotime('yesterday'),
+        ];
+
+        $token = $this->mockClassWithProperties(OptInModel::class, $properties);
         $token
             ->expects($this->once())
             ->method('getRelatedRecords')
@@ -100,7 +99,7 @@ class OptInTest extends ContaoTestCase
 
         $token
             ->expects($this->once())
-            ->method($method)
+            ->method('delete')
         ;
 
         $optInAdapter = $this->mockAdapter(['findExpiredTokens']);
@@ -121,7 +120,7 @@ class OptInTest extends ContaoTestCase
         $memberAdapter
             ->expects($this->once())
             ->method('findMultipleByIds')
-            ->willReturn($model)
+            ->willReturn(null)
         ;
 
         $adapters = [
@@ -134,9 +133,94 @@ class OptInTest extends ContaoTestCase
         (new OptIn($framework))->purgeTokens();
     }
 
-    public function getExpiredTokens(): \Generator
+    public function testProlongsExpiredTokens(): void
     {
-        yield ['delete', null];
-        yield ['save', new Collection([$this->createMock(MemberModel::class)], 'tl_member')];
+        $properties = [
+            'removeOn' => strtotime('today'),
+            'confirmedOn' => strtotime('yesterday'),
+        ];
+
+        $token = $this->mockClassWithProperties(OptInModel::class, $properties);
+        $token
+            ->expects($this->once())
+            ->method('getRelatedRecords')
+            ->willReturn(['tl_member' => 1])
+        ;
+
+        $token
+            ->expects($this->once())
+            ->method('save')
+        ;
+
+        $optInAdapter = $this->mockAdapter(['findExpiredTokens']);
+        $optInAdapter
+            ->expects($this->once())
+            ->method('findExpiredTokens')
+            ->willReturn([$token])
+        ;
+
+        $modelAdapter = $this->mockAdapter(['getClassFromTable']);
+        $modelAdapter
+            ->expects($this->once())
+            ->method('getClassFromTable')
+            ->willReturn(MemberModel::class)
+        ;
+
+        $memberAdapter = $this->mockAdapter(['findMultipleByIds']);
+        $memberAdapter
+            ->expects($this->once())
+            ->method('findMultipleByIds')
+            ->willReturn(new Collection([$this->createMock(MemberModel::class)], 'tl_member'))
+        ;
+
+        $adapters = [
+            OptInModel::class => $optInAdapter,
+            Model::class => $modelAdapter,
+            MemberModel::class => $memberAdapter,
+        ];
+
+        $framework = $this->mockContaoFramework($adapters);
+        (new OptIn($framework))->purgeTokens();
+
+        $this->assertSame(strtotime('+3 years', $properties['removeOn']), $token->removeOn);
+    }
+
+    public function testPurgesUnconfirmedTokens(): void
+    {
+        $properties = [
+            'confirmedOn' => 0,
+        ];
+
+        $token = $this->mockClassWithProperties(OptInModel::class, $properties);
+        $token
+            ->expects($this->never())
+            ->method('getRelatedRecords')
+        ;
+
+        $token
+            ->expects($this->once())
+            ->method('delete')
+        ;
+
+        $optInAdapter = $this->mockAdapter(['findExpiredTokens']);
+        $optInAdapter
+            ->expects($this->once())
+            ->method('findExpiredTokens')
+            ->willReturn([$token])
+        ;
+
+        $modelAdapter = $this->mockAdapter(['getClassFromTable']);
+        $modelAdapter
+            ->expects($this->never())
+            ->method('getClassFromTable')
+        ;
+
+        $adapters = [
+            OptInModel::class => $optInAdapter,
+            Model::class => $modelAdapter,
+        ];
+
+        $framework = $this->mockContaoFramework($adapters);
+        (new OptIn($framework))->purgeTokens();
     }
 }

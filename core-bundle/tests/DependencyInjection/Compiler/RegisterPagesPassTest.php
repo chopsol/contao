@@ -16,9 +16,9 @@ use Contao\CoreBundle\ContaoCoreBundle;
 use Contao\CoreBundle\Controller\FrontendModule\TwoFactorController;
 use Contao\CoreBundle\DependencyInjection\Compiler\RegisterPagesPass;
 use Contao\CoreBundle\Fixtures\Controller\Page\TestPageController;
-use Contao\CoreBundle\Routing\Page\PageRegistry;
 use Contao\CoreBundle\Tests\TestCase;
 use Contao\FrontendIndex;
+use Psr\Container\ContainerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
@@ -32,7 +32,7 @@ class RegisterPagesPassTest extends TestCase
         $container
             ->expects($this->once())
             ->method('has')
-            ->with(PageRegistry::class)
+            ->with('contao.routing.page_registry')
             ->willReturn(false)
         ;
 
@@ -53,11 +53,7 @@ class RegisterPagesPassTest extends TestCase
             ->method('addMethodCall')
             ->with(
                 'add',
-                $this->callback(
-                    static function ($arguments) {
-                        return 'my_type' === $arguments[0];
-                    }
-                )
+                $this->callback(static fn ($arguments) => 'my_type' === $arguments[0]),
             )
         ;
 
@@ -65,7 +61,7 @@ class RegisterPagesPassTest extends TestCase
         $definition->addTag('contao.page', ['type' => 'my_type']);
 
         $container = new ContainerBuilder();
-        $container->setDefinition(PageRegistry::class, $registry);
+        $container->setDefinition('contao.routing.page_registry', $registry);
         $container->setDefinition('test.controller', $definition);
 
         $pass = new RegisterPagesPass();
@@ -80,11 +76,7 @@ class RegisterPagesPassTest extends TestCase
             ->method('addMethodCall')
             ->with(
                 'add',
-                $this->callback(
-                    static function ($arguments) {
-                        return 'contao_core_bundle' === $arguments[0];
-                    }
-                )
+                $this->callback(static fn ($arguments) => 'contao_core_bundle' === $arguments[0]),
             )
         ;
 
@@ -92,7 +84,7 @@ class RegisterPagesPassTest extends TestCase
         $definition->addTag('contao.page');
 
         $container = new ContainerBuilder();
-        $container->setDefinition(PageRegistry::class, $registry);
+        $container->setDefinition('contao.routing.page_registry', $registry);
         $container->setDefinition('test.controller', $definition);
 
         $pass = new RegisterPagesPass();
@@ -107,11 +99,7 @@ class RegisterPagesPassTest extends TestCase
             ->method('addMethodCall')
             ->with(
                 'add',
-                $this->callback(
-                    static function ($arguments) {
-                        return 'two_factor' === $arguments[0];
-                    }
-                )
+                $this->callback(static fn ($arguments) => 'two_factor' === $arguments[0]),
             )
         ;
 
@@ -119,7 +107,7 @@ class RegisterPagesPassTest extends TestCase
         $definition->addTag('contao.page');
 
         $container = new ContainerBuilder();
-        $container->setDefinition(PageRegistry::class, $registry);
+        $container->setDefinition('contao.routing.page_registry', $registry);
         $container->setDefinition('test.controller', $definition);
 
         $pass = new RegisterPagesPass();
@@ -134,11 +122,7 @@ class RegisterPagesPassTest extends TestCase
             ->method('addMethodCall')
             ->with(
                 'add',
-                $this->callback(
-                    static function ($arguments) {
-                        return 'test' === $arguments[0];
-                    }
-                )
+                $this->callback(static fn ($arguments) => 'test' === $arguments[0]),
             )
         ;
 
@@ -146,7 +130,7 @@ class RegisterPagesPassTest extends TestCase
         $definition->addTag('contao.page');
 
         $container = new ContainerBuilder();
-        $container->setDefinition(PageRegistry::class, $registry);
+        $container->setDefinition('contao.routing.page_registry', $registry);
         $container->setDefinition('test.controller', $definition);
 
         $pass = new RegisterPagesPass();
@@ -163,13 +147,12 @@ class RegisterPagesPassTest extends TestCase
                 'add',
                 $this->callback(
                     function ($arguments) {
-                        /** @var Definition $definition */
                         $definition = $arguments[1];
                         $this->assertInstanceOf(Definition::class, $definition);
 
                         return 'MyController::action' === $definition->getArgument(5)['_controller'];
-                    }
-                )
+                    },
+                ),
             )
         ;
 
@@ -177,7 +160,7 @@ class RegisterPagesPassTest extends TestCase
         $definition->addTag('contao.page', ['defaults' => ['_controller' => 'MyController::action']]);
 
         $container = new ContainerBuilder();
-        $container->setDefinition(PageRegistry::class, $registry);
+        $container->setDefinition('contao.routing.page_registry', $registry);
         $container->setDefinition('test.controller', $definition);
 
         $pass = new RegisterPagesPass();
@@ -194,13 +177,12 @@ class RegisterPagesPassTest extends TestCase
                 'add',
                 $this->callback(
                     function ($arguments) {
-                        /** @var Definition $definition */
                         $definition = $arguments[1];
                         $this->assertInstanceOf(Definition::class, $definition);
 
                         return 'test.controller:action' === $definition->getArgument(5)['_controller'];
-                    }
-                )
+                    },
+                ),
             )
         ;
 
@@ -209,7 +191,7 @@ class RegisterPagesPassTest extends TestCase
         $definition->setPublic(false);
 
         $container = new ContainerBuilder();
-        $container->setDefinition(PageRegistry::class, $registry);
+        $container->setDefinition('contao.routing.page_registry', $registry);
         $container->setDefinition('test.controller', $definition);
 
         $pass = new RegisterPagesPass();
@@ -228,13 +210,12 @@ class RegisterPagesPassTest extends TestCase
                 'add',
                 $this->callback(
                     function ($arguments) {
-                        /** @var Definition $definition */
                         $definition = $arguments[1];
                         $this->assertInstanceOf(Definition::class, $definition);
 
                         return 'test.controller' === $definition->getArgument(5)['_controller'];
-                    }
-                )
+                    },
+                ),
             )
         ;
 
@@ -243,13 +224,45 @@ class RegisterPagesPassTest extends TestCase
         $definition->setPublic(false);
 
         $container = new ContainerBuilder();
-        $container->setDefinition(PageRegistry::class, $registry);
+        $container->setDefinition('contao.routing.page_registry', $registry);
         $container->setDefinition('test.controller', $definition);
 
         $pass = new RegisterPagesPass();
         $pass->process($container);
 
         $this->assertTrue($definition->isPublic());
+    }
+
+    public function testAddsContainerCallIfClassExtendsSymfonyAbstractController(): void
+    {
+        $definition = $this
+            ->getMockBuilder(Definition::class)
+            ->setConstructorArgs([TestPageController::class])
+            ->onlyMethods(['addMethodCall'])
+            ->getMock()
+        ;
+
+        $definition
+            ->expects($this->once())
+            ->method('addMethodCall')
+            ->with(
+                $this->callback(static fn ($method) => 'setContainer' === $method),
+                $this->callback(
+                    static fn (array $arguments) => 1 === \count($arguments)
+                        && $arguments[0] instanceof Reference
+                        && ContainerInterface::class === (string) $arguments[0],
+                ),
+            )
+        ;
+
+        $definition->addTag('contao.page');
+
+        $container = new ContainerBuilder();
+        $container->setDefinition('contao.routing.page_registry', $this->createMock(Definition::class));
+        $container->setDefinition('test.controller', $definition);
+
+        $pass = new RegisterPagesPass();
+        $pass->process($container);
     }
 
     public function testUsesFrontendIndexControllerIfClassIsNotCallable(): void
@@ -262,13 +275,12 @@ class RegisterPagesPassTest extends TestCase
                 'add',
                 $this->callback(
                     function ($arguments) {
-                        /** @var Definition $definition */
                         $definition = $arguments[1];
                         $this->assertInstanceOf(Definition::class, $definition);
 
                         return FrontendIndex::class.'::renderPage' === $definition->getArgument(5)['_controller'];
-                    }
-                )
+                    },
+                ),
             )
         ;
 
@@ -277,7 +289,7 @@ class RegisterPagesPassTest extends TestCase
         $definition->setPublic(false);
 
         $container = new ContainerBuilder();
-        $container->setDefinition(PageRegistry::class, $registry);
+        $container->setDefinition('contao.routing.page_registry', $registry);
         $container->setDefinition('test.controller', $definition);
 
         $pass = new RegisterPagesPass();
@@ -296,13 +308,12 @@ class RegisterPagesPassTest extends TestCase
                 'add',
                 $this->callback(
                     function ($arguments) {
-                        /** @var Reference $reference */
                         $reference = $arguments[2];
                         $this->assertInstanceOf(Reference::class, $reference);
 
                         return 'test.controller' === (string) $reference;
-                    }
-                )
+                    },
+                ),
             )
         ;
 
@@ -310,7 +321,7 @@ class RegisterPagesPassTest extends TestCase
         $definition->addTag('contao.page');
 
         $container = new ContainerBuilder();
-        $container->setDefinition(PageRegistry::class, $registry);
+        $container->setDefinition('contao.routing.page_registry', $registry);
         $container->setDefinition('test.controller', $definition);
 
         $pass = new RegisterPagesPass();
@@ -327,13 +338,12 @@ class RegisterPagesPassTest extends TestCase
                 'add',
                 $this->callback(
                     function ($arguments) {
-                        /** @var Reference $reference */
                         $reference = $arguments[3];
                         $this->assertInstanceOf(Reference::class, $reference);
 
                         return 'test.controller' === (string) $reference;
-                    }
-                )
+                    },
+                ),
             )
         ;
 
@@ -341,7 +351,7 @@ class RegisterPagesPassTest extends TestCase
         $definition->addTag('contao.page');
 
         $container = new ContainerBuilder();
-        $container->setDefinition(PageRegistry::class, $registry);
+        $container->setDefinition('contao.routing.page_registry', $registry);
         $container->setDefinition('test.controller', $definition);
 
         $pass = new RegisterPagesPass();

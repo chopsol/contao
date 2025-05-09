@@ -12,91 +12,58 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Command;
 
+use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\Filesystem\Filesystem;
-use Webmozart\PathUtil\Path;
+use Symfony\Component\Filesystem\Path;
 
-/**
- * Installs the required Contao directories.
- *
- * @internal
- */
+#[AsCommand(
+    name: 'contao:install',
+    description: 'Installs the required Contao directories.',
+)]
 class InstallCommand extends Command
 {
-    protected static $defaultName = 'contao:install';
+    private Filesystem|null $fs = null;
 
-    /**
-     * @var Filesystem
-     */
-    private $fs;
+    private array $rows = [];
 
-    /**
-     * @var array
-     */
-    private $rows = [];
+    private string|null $webDir = null;
 
-    /**
-     * @var string
-     */
-    private $projectDir;
-
-    /**
-     * @var string
-     */
-    private $uploadPath;
-
-    /**
-     * @var string
-     */
-    private $imageDir;
-
-    /**
-     * @var string
-     */
-    private $webDir;
-
-    public function __construct(string $projectDir, string $uploadPath, string $imageDir)
-    {
-        $this->projectDir = $projectDir;
-        $this->uploadPath = $uploadPath;
-        $this->imageDir = $imageDir;
-
+    public function __construct(
+        private readonly string $projectDir,
+        private readonly string $uploadPath,
+    ) {
         parent::__construct();
     }
 
     protected function configure(): void
     {
-        $this
-            ->addArgument('target', InputArgument::OPTIONAL, 'The target directory', 'web')
-            ->setDescription('Installs the required Contao directories')
-        ;
+        $this->addArgument('target', InputArgument::OPTIONAL, 'The target directory');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $this->fs = new Filesystem();
-        $this->webDir = $input->getArgument('target');
+        $this->webDir = $input->getArgument('target') ?? 'public';
 
         $this->addEmptyDirs();
 
-        if (!empty($this->rows)) {
+        if ($this->rows) {
             $io = new SymfonyStyle($input, $output);
             $io->newLine();
             $io->listing($this->rows);
         }
 
-        return 0;
+        return Command::SUCCESS;
     }
 
     private function addEmptyDirs(): void
     {
         static $emptyDirs = [
-            'assets/css',
-            'assets/js',
             'system',
             'system/cache',
             'system/config',
@@ -109,10 +76,9 @@ class InstallCommand extends Command
         ];
 
         foreach ($emptyDirs as $path) {
-            $this->addEmptyDir(Path::join($this->projectDir, sprintf($path, $this->webDir)));
+            $this->addEmptyDir(Path::join($this->projectDir, \sprintf($path, $this->webDir)));
         }
 
-        $this->addEmptyDir($this->imageDir);
         $this->addEmptyDir(Path::join($this->projectDir, $this->uploadPath));
     }
 

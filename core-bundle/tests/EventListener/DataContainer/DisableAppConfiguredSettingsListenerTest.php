@@ -13,29 +13,21 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Tests\EventListener\DataContainer;
 
 use Contao\CoreBundle\EventListener\DataContainer\DisableAppConfiguredSettingsListener;
-use Contao\CoreBundle\ServiceAnnotation\Callback;
 use Contao\CoreBundle\Tests\TestCase;
 use Contao\Image;
-use Doctrine\Common\Annotations\AnnotationReader;
+use Doctrine\Common\Annotations\AnnotationRegistry;
+use Doctrine\Common\Annotations\DocParser;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
 class DisableAppConfiguredSettingsListenerTest extends TestCase
 {
-    public function testAnnotatedCallbacks(): void
+    protected function tearDown(): void
     {
-        $listener = $this->createListener();
+        unset($GLOBALS['TL_DCA']);
 
-        $annotationReader = new AnnotationReader();
-        $annotation = $annotationReader->getClassAnnotation(new \ReflectionClass($listener), Callback::class);
+        $this->resetStaticProperties([[AnnotationRegistry::class, ['failedToAutoload']], DocParser::class]);
 
-        $this->assertSame(
-            [
-                'table' => 'tl_settings',
-                'target' => 'config.onload',
-                'priority' => null,
-            ],
-            (array) $annotation
-        );
+        parent::tearDown();
     }
 
     public function testLoadCallbackExitsOnMissingLocalconfigParameter(): void
@@ -78,7 +70,7 @@ class DisableAppConfiguredSettingsListenerTest extends TestCase
                 'adminEmail' => 'admin@example.org',
                 'dateFormat' => 'd.M.Y',
                 'fooBar' => false,
-            ]
+            ],
         );
         $listener->onLoadCallback();
 
@@ -93,8 +85,9 @@ class DisableAppConfiguredSettingsListenerTest extends TestCase
                         'tl_class' => 'w50',
                         'disabled' => true,
                         'helpwizard' => false,
+                        'chosen' => false,
                     ],
-                    'xlabel' => [[DisableAppConfiguredSettingsListener::class, 'renderHelpIcon']],
+                    'xlabel' => [['contao.listener.data_container.disable_app_configured_settings', 'renderHelpIcon']],
                 ],
                 'dateFormat' => [
                     'inputType' => 'text',
@@ -104,12 +97,13 @@ class DisableAppConfiguredSettingsListenerTest extends TestCase
                         'decodeEntities' => true,
                         'tl_class' => 'w50',
                         'disabled' => true,
+                        'chosen' => false,
                     ],
                     'explanation' => 'dateFormat',
-                    'xlabel' => [[DisableAppConfiguredSettingsListener::class, 'renderHelpIcon']],
+                    'xlabel' => [['contao.listener.data_container.disable_app_configured_settings', 'renderHelpIcon']],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_settings']['fields']
+            $GLOBALS['TL_DCA']['tl_settings']['fields'],
         );
     }
 
@@ -126,25 +120,22 @@ class DisableAppConfiguredSettingsListenerTest extends TestCase
         $imageAdapter
             ->expects($this->once())
             ->method('getHtml')
-            ->willReturn('<img src="system/themes/icons/show.svg" alt="" title="title">')
+            ->willReturn('<img src="system/themes/icons/info.svg" alt="" data-contao--tooltips-target="tooltip">')
         ;
 
         $listener = $this->createListener(null, $translator, [Image::class => $imageAdapter]);
 
         $this->assertSame(
-            '<img src="system/themes/icons/show.svg" alt="" title="title">',
-            $listener->renderHelpIcon()
+            ' <img src="system/themes/icons/info.svg" alt="" data-contao--tooltips-target="tooltip">',
+            $listener->renderHelpIcon(),
         );
     }
 
-    private function createListener(array $localConfig = null, ?TranslatorInterface $translator = null, array $adapters = []): DisableAppConfiguredSettingsListener
+    private function createListener(array|null $localConfig = null, TranslatorInterface|null $translator = null, array $adapters = []): DisableAppConfiguredSettingsListener
     {
         $this->mockContaoFramework()->initialize();
 
-        if (null === $translator) {
-            $translator = $this->createMock(TranslatorInterface::class);
-        }
-
+        $translator ??= $this->createMock(TranslatorInterface::class);
         $framework = $this->mockContaoFramework($adapters);
 
         return new DisableAppConfiguredSettingsListener($translator, $framework, $localConfig ?: []);

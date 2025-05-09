@@ -15,10 +15,10 @@ namespace Contao\CoreBundle\Tests\DependencyInjection\Compiler;
 use Contao\CoreBundle\DependencyInjection\Compiler\AddAvailableTransportsPass;
 use Contao\CoreBundle\Mailer\AvailableTransports;
 use Contao\CoreBundle\Mailer\TransportConfig;
+use PHPUnit\Framework\Constraint\IsType;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
-use Symfony\Component\DependencyInjection\Reference;
 
 class AddAvailableTransportsPassTest extends TestCase
 {
@@ -30,7 +30,7 @@ class AddAvailableTransportsPassTest extends TestCase
         $pass = new AddAvailableTransportsPass();
         $pass->process($container);
 
-        $definition = $container->getDefinition(AvailableTransports::class);
+        $definition = $container->getDefinition('contao.mailer.available_transports');
 
         $this->assertEmpty($definition->getMethodCalls());
     }
@@ -49,7 +49,7 @@ class AddAvailableTransportsPassTest extends TestCase
         $pass = new AddAvailableTransportsPass();
         $pass->process($container);
 
-        $definition = $container->getDefinition(AvailableTransports::class);
+        $definition = $container->getDefinition('contao.mailer.available_transports');
 
         $this->assertEmpty($definition->getMethodCalls());
     }
@@ -72,7 +72,7 @@ class AddAvailableTransportsPassTest extends TestCase
         $pass = new AddAvailableTransportsPass();
         $pass->process($container);
 
-        $definition = $container->getDefinition(AvailableTransports::class);
+        $definition = $container->getDefinition('contao.mailer.available_transports');
 
         $this->assertEmpty($definition->getMethodCalls());
     }
@@ -107,10 +107,7 @@ class AddAvailableTransportsPassTest extends TestCase
 
         $this->assertCount(2, $transports);
 
-        /** @var Definition $transportConfig1 */
         $transportConfig1 = $transports[0][0];
-
-        /** @var Definition $transportConfig2 */
         $transportConfig2 = $transports[1][0];
 
         $this->assertSame('main', $transportConfig1->getArgument(0));
@@ -152,10 +149,7 @@ class AddAvailableTransportsPassTest extends TestCase
 
         $this->assertCount(2, $transports);
 
-        /** @var Definition $transportConfig1 */
         $transportConfig1 = $transports[0][0];
-
-        /** @var Definition $transportConfig2 */
         $transportConfig2 = $transports[1][0];
 
         $this->assertSame('main', $transportConfig1->getArgument(0));
@@ -167,22 +161,20 @@ class AddAvailableTransportsPassTest extends TestCase
     private function getContainerBuilder(): ContainerBuilder
     {
         $container = new ContainerBuilder();
-        $container->setDefinition(AvailableTransports::class, new Definition(AvailableTransports::class, []));
+        $container->setDefinition('contao.mailer.available_transports', new Definition(AvailableTransports::class, []));
 
         return $container;
     }
 
     /**
-     * @return array<int,array<int,Reference|string>>
+     * @return array<int, array<int, Definition|string>>
      */
     private function getTransportsFromDefinition(ContainerBuilder $container): array
     {
-        $this->assertTrue($container->hasDefinition(AvailableTransports::class));
+        $this->assertTrue($container->hasDefinition('contao.mailer.available_transports'));
 
-        $definition = $container->getDefinition(AvailableTransports::class);
+        $definition = $container->getDefinition('contao.mailer.available_transports');
         $methodCalls = $definition->getMethodCalls();
-
-        $this->assertIsArray($methodCalls);
 
         $transports = [];
 
@@ -196,7 +188,7 @@ class AddAvailableTransportsPassTest extends TestCase
 
             $this->assertSame(TransportConfig::class, $definition->getClass());
             $this->assertIsString($definition->getArgument(0));
-            $this->assertThat($definition->getArgument(1), $this->logicalOr($this->isType('string'), $this->isNull()));
+            $this->assertThat($definition->getArgument(1), $this->logicalOr(new IsType('string'), $this->isNull()));
 
             $transports[] = $methodCall[1];
         }

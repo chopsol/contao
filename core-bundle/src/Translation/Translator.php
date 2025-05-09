@@ -12,74 +12,61 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Translation;
 
+use Contao\CoreBundle\Config\ResourceFinder;
 use Contao\CoreBundle\Framework\ContaoFramework;
 use Contao\System;
 use Symfony\Component\Translation\MessageCatalogueInterface;
 use Symfony\Component\Translation\TranslatorBagInterface;
-use Symfony\Component\Translation\TranslatorInterface as LegacyTranslatorInterface;
 use Symfony\Contracts\Translation\LocaleAwareInterface;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
-class Translator implements TranslatorInterface, TranslatorBagInterface, LocaleAwareInterface, LegacyTranslatorInterface
+class Translator implements TranslatorInterface, TranslatorBagInterface, LocaleAwareInterface
 {
     /**
-     * @var TranslatorInterface|TranslatorBagInterface|LegacyTranslatorInterface
+     * @var \SplObjectStorage<MessageCatalogueInterface, MessageCatalogue>
      */
-    private $translator;
+    private readonly \SplObjectStorage $catalogues;
 
     /**
-     * @var ContaoFramework
+     * @internal
      */
-    private $framework;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.translation.translator" service instead
-     */
-    public function __construct(TranslatorInterface $translator, ContaoFramework $framework)
-    {
-        $this->translator = $translator;
-        $this->framework = $framework;
+    public function __construct(
+        private readonly LocaleAwareInterface|TranslatorBagInterface|TranslatorInterface $translator,
+        private readonly ContaoFramework $framework,
+        private readonly ResourceFinder $resourceFinder,
+    ) {
+        $this->catalogues = new \SplObjectStorage();
     }
 
     /**
      * {@inheritdoc}
      *
      * Gets the translation from Contao’s $GLOBALS['TL_LANG'] array if the message
-     * domain starts with "contao_". The locale parameter is ignored in this case.
+     * domain starts with "contao_".
      */
-    public function trans($id, array $parameters = [], $domain = null, $locale = null): string
+    public function trans(string $id, array $parameters = [], string|null $domain = null, string|null $locale = null): string
     {
         // Forward to the default translator
-        if (null === $domain || 0 !== strncmp($domain, 'contao_', 7)) {
+        if (null === $domain || !str_starts_with($domain, 'contao_')) {
             return $this->translator->trans($id, $parameters, $domain, $locale);
         }
 
-        if (null === $locale) {
-            $locale = $this->translator->getLocale();
-        }
+        $translated = $this->getCatalogue($locale)->get($id, $domain);
 
-        $this->framework->initialize();
-        $this->loadLanguageFile(substr($domain, 7), $locale);
-
-        $translated = $this->getFromGlobals($id);
-
-        if (null === $translated) {
-            return $id;
-        }
-
-        if (!empty($parameters)) {
+        if ($parameters) {
             $translated = vsprintf($translated, $parameters);
+        }
+
+        // Restore previous translations in $GLOBALS['TL_LANG'] (see #5371)
+        if (null !== $locale && $locale !== $this->getLocale()) {
+            $system = $this->framework->getAdapter(System::class);
+            $system->loadLanguageFile(substr($domain, 7), $this->getLocale());
         }
 
         return $translated;
     }
 
-    public function transChoice($id, $number, array $parameters = [], $domain = null, $locale = null): string
-    {
-        return $this->translator->transChoice($id, $number, $parameters, $domain, $locale);
-    }
-
-    public function setLocale($locale): void
+    public function setLocale(string $locale): void
     {
         $this->translator->setLocale($locale);
     }
@@ -89,9 +76,33 @@ class Translator implements TranslatorInterface, TranslatorBagInterface, LocaleA
         return $this->translator->getLocale();
     }
 
-    public function getCatalogue($locale = null): MessageCatalogueInterface
+    public function getCatalogue(string|null $locale = null): MessageCatalogueInterface
     {
-        return $this->translator->getCatalogue($locale);
+        $parentCatalog = $this->translator->getCatalogue($locale);
+
+        if (!$this->catalogues->contains($parentCatalog)) {
+            $this->catalogues->attach(
+                $parentCatalog,
+                new MessageCatalogue($parentCatalog, $this->framework, $this->resourceFinder),
+            );
+        }
+
+        return $this->catalogues->offsetGet($parentCatalog);
+    }
+
+    public function getCatalogues(): array
+    {
+        if (!method_exists($this->translator, 'getCatalogues')) {
+            return [];
+        }
+
+        $catalogues = [];
+
+        foreach ($this->translator->getCatalogues() as $catalogue) {
+            $catalogues[] = $this->getCatalogue($catalogue->getLocale());
+        }
+
+        return $catalogues;
     }
 
     /**
@@ -116,38 +127,5 @@ class Translator implements TranslatorInterface, TranslatorBagInterface, LocaleA
         }
 
         return [];
-    }
-
-    /**
-     * Returns the labels from $GLOBALS['TL_LANG'] based on a message ID like "MSC.view".
-     */
-    private function getFromGlobals(string $id): ?string
-    {
-        // Split the ID into chunks allowing escaped dots (\.) and backslashes (\\)
-        preg_match_all('/(?:\\\\[\\\\.]|[^.])++/', $id, $matches);
-
-        /** @var array<string> $parts */
-        $parts = preg_replace('/\\\\([\\\\.])/', '$1', $matches[0]);
-        $item = &$GLOBALS['TL_LANG'];
-
-        foreach ($parts as $part) {
-            if (!isset($item[$part])) {
-                return null;
-            }
-
-            $item = &$item[$part];
-        }
-
-        return $item;
-    }
-
-    /**
-     * Loads a Contao framework language file.
-     */
-    private function loadLanguageFile(string $name, string $locale = null): void
-    {
-        /** @var System $system */
-        $system = $this->framework->getAdapter(System::class);
-        $system->loadLanguageFile($name, $locale);
     }
 }

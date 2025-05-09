@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\OptIn;
 
+use Contao\CoreBundle\Framework\Adapter;
 use Contao\CoreBundle\Framework\ContaoFramework;
 use Contao\Model;
 use Contao\OptInModel;
@@ -19,16 +20,10 @@ use Contao\OptInModel;
 class OptIn implements OptInInterface
 {
     /**
-     * @var ContaoFramework
+     * @internal
      */
-    private $framework;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.opt-in" service instead
-     */
-    public function __construct(ContaoFramework $framework)
+    public function __construct(private readonly ContaoFramework $framework)
     {
-        $this->framework = $framework;
     }
 
     public function create(string $prefix, string $email, array $related): OptInTokenInterface
@@ -47,7 +42,8 @@ class OptIn implements OptInInterface
             $token = $prefix.'-'.substr($token, \strlen($prefix) + 1);
         }
 
-        /** @var OptInModel $optIn */
+        $this->framework->initialize();
+
         $optIn = $this->framework->createInstance(OptInModel::class);
         $optIn->tstamp = time();
         $optIn->token = $token;
@@ -64,9 +60,10 @@ class OptIn implements OptInInterface
         return new OptInToken($optIn, $this->framework);
     }
 
-    public function find(string $identifier): ?OptInTokenInterface
+    public function find(string $identifier): OptInTokenInterface|null
     {
-        /** @var OptInModel $adapter */
+        $this->framework->initialize();
+
         $adapter = $this->framework->getAdapter(OptInModel::class);
 
         if (!$model = $adapter->findByToken($identifier)) {
@@ -78,28 +75,34 @@ class OptIn implements OptInInterface
 
     public function purgeTokens(): void
     {
-        /** @var OptInModel $adapter */
+        $this->framework->initialize();
+
         $adapter = $this->framework->getAdapter(OptInModel::class);
 
         if (!$tokens = $adapter->findExpiredTokens()) {
             return;
         }
 
-        /** @var Model $adapter */
         $adapter = $this->framework->getAdapter(Model::class);
 
         foreach ($tokens as $token) {
             $delete = true;
-            $related = $token->getRelatedRecords();
 
-            foreach ($related as $table => $id) {
-                /** @var Model $model */
-                $model = $this->framework->getAdapter($adapter->getClassFromTable($table));
+            // If the token has been confirmed, check if the related records still exist
+            if ($token->confirmedOn) {
+                $related = $token->getRelatedRecords();
 
-                // Check if the related records still exist
-                if (null !== $model->findMultipleByIds($id)) {
-                    $delete = false;
-                    break;
+                foreach ($related as $table => $id) {
+                    /** @var class-string<Model> $class */
+                    $class = $adapter->getClassFromTable($table);
+
+                    /** @var Adapter<Model> $model */
+                    $model = $this->framework->getAdapter($class);
+
+                    if ($model->findMultipleByIds($id)) {
+                        $delete = false;
+                        break;
+                    }
                 }
             }
 

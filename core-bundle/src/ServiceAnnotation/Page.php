@@ -13,67 +13,44 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\ServiceAnnotation;
 
 use Doctrine\Common\Annotations\Annotation\Target;
+use Symfony\Component\Routing\Annotation\Route;
 use Terminal42\ServiceAnnotationBundle\Annotation\ServiceTagInterface;
 
 /**
- * Annotation class for @Page().
+ * Annotation to register a page.
  *
  * @Annotation
+ *
  * @Target({"CLASS", "METHOD"})
  *
- * @see \Symfony\Component\Routing\Annotation\Route
+ * @see Route
+ *
+ * @deprecated Deprecated since Contao 5.4, to be removed in Contao 6;
+ *             use the #[AsPage] attribute instead
  */
 final class Page implements ServiceTagInterface
 {
-    /**
-     * @var string
-     */
-    private $type;
+    private string|null $type = null;
 
-    /**
-     * @var bool
-     */
-    private $contentComposition = true;
+    private bool $contentComposition = true;
 
-    /**
-     * @var string|null
-     */
-    private $path;
+    private string|null $urlSuffix = null;
 
-    /**
-     * @var string|null
-     */
-    private $urlSuffix;
+    private array $requirements = [];
 
-    /**
-     * @var array
-     */
-    private $requirements = [];
+    private array $options = [];
 
-    /**
-     * @var array
-     */
-    private $options = [];
+    private array $defaults = [];
 
-    /**
-     * @var array
-     */
-    private $defaults = [];
+    private array $methods = [];
 
-    /**
-     * @var array
-     */
-    private $methods = [];
+    private bool|string|null $path = null;
 
     public function __construct(array $data)
     {
         if (isset($data['value'])) {
             $data['type'] = $data['value'];
             unset($data['value']);
-        }
-
-        if (!isset($data['type'])) {
-            throw new \LogicException('@Page annotation requires a type property.');
         }
 
         if (isset($data['locale'])) {
@@ -95,7 +72,7 @@ final class Page implements ServiceTagInterface
             $method = 'set'.str_replace('_', '', $key);
 
             if (!method_exists($this, $method)) {
-                throw new \BadMethodCallException(sprintf('Unknown property "%s" on annotation "%s".', $key, static::class));
+                throw new \BadMethodCallException(\sprintf('Unknown property "%s" on annotation "%s".', $key, self::class));
             }
 
             $this->$method($value);
@@ -104,6 +81,8 @@ final class Page implements ServiceTagInterface
 
     public function getName(): string
     {
+        trigger_deprecation('contao/core-bundle', '5.4', 'Using the @Page annotation has been deprecated and will no longer work in Contao 6. Use the #[AsPage] attribute instead.');
+
         return 'contao.page';
     }
 
@@ -141,17 +120,17 @@ final class Page implements ServiceTagInterface
         $this->contentComposition = $contentComposition;
     }
 
-    public function setPath(?string $path): void
+    public function setPath(bool|string|null $path): void
     {
         $this->path = $path;
     }
 
-    public function getPath(): ?string
+    public function getPath(): bool|string|null
     {
         return $this->path;
     }
 
-    public function getUrlSuffix(): ?string
+    public function getUrlSuffix(): string|null
     {
         return $this->urlSuffix;
     }
@@ -194,7 +173,7 @@ final class Page implements ServiceTagInterface
     /**
      * @param string|array<string> $methods
      */
-    public function setMethods($methods): void
+    public function setMethods(array|string $methods): void
     {
         $this->methods = \is_array($methods) ? $methods : [$methods];
     }

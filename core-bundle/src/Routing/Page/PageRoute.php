@@ -13,31 +13,27 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Routing\Page;
 
 use Contao\CoreBundle\ContaoCoreBundle;
+use Contao\CoreBundle\Util\LocaleUtil;
 use Contao\PageModel;
 use Symfony\Cmf\Component\Routing\RouteObjectInterface;
 use Symfony\Component\Routing\Route;
 
 class PageRoute extends Route implements RouteObjectInterface
 {
-    /**
-     * @var PageModel
-     */
-    private $pageModel;
+    final public const PAGE_BASED_ROUTE_NAME = 'page_routing_object';
+
+    private readonly PageModel $pageModel;
+
+    private string $routeKey;
+
+    private string $urlPrefix;
+
+    private string $urlSuffix;
 
     /**
-     * @var string
+     * The referenced content object (can be anything).
      */
-    private $urlPrefix;
-
-    /**
-     * @var string
-     */
-    private $urlSuffix;
-
-    /**
-     * The referenced content object.
-     */
-    private $content;
+    private object|null $content = null;
 
     /**
      * @param string|array<string> $methods
@@ -46,26 +42,29 @@ class PageRoute extends Route implements RouteObjectInterface
     {
         $pageModel->loadDetails();
 
-        $defaults = array_merge(
-            [
-                '_token_check' => true,
-                '_controller' => 'Contao\FrontendIndex:renderPage',
-                '_scope' => ContaoCoreBundle::SCOPE_FRONTEND,
-                '_locale' => $pageModel->rootLanguage,
-                '_format' => 'html',
-            ],
-            $defaults
-        );
+        $defaults = [
+            '_controller' => 'Contao\FrontendIndex::renderPage',
+            '_scope' => ContaoCoreBundle::SCOPE_FRONTEND,
+            '_locale' => LocaleUtil::formatAsLocale($pageModel->rootLanguage ?? ''),
+            '_format' => 'html',
+            '_canonical_route' => 'tl_page.'.$pageModel->id,
+            ...$defaults,
+        ];
 
+        // Always use the given page model in the defaults
         $defaults['pageModel'] = $pageModel;
 
         if (!isset($options['utf8'])) {
             $options['utf8'] = true;
         }
 
+        if (!isset($options['compiler_class'])) {
+            $options['compiler_class'] = PageRouteCompiler::class;
+        }
+
         if ('' === $path) {
             $path = '/'.($pageModel->alias ?: $pageModel->id);
-        } elseif (0 !== strncmp($path, '/', 1)) {
+        } elseif (!str_starts_with($path, '/')) {
             $path = '/'.($pageModel->alias ?: $pageModel->id).'/'.$path;
         }
 
@@ -75,11 +74,12 @@ class PageRoute extends Route implements RouteObjectInterface
             $requirements,
             $options,
             $pageModel->domain,
-            $pageModel->rootUseSSL ? 'https' : null,
-            $methods
+            $pageModel->rootUseSSL ? 'https' : 'http',
+            $methods,
         );
 
         $this->pageModel = $pageModel;
+        $this->routeKey = 'tl_page.'.$pageModel->id;
         $this->urlPrefix = $pageModel->urlPrefix;
         $this->urlSuffix = $pageModel->urlSuffix;
     }
@@ -98,6 +98,11 @@ class PageRoute extends Route implements RouteObjectInterface
         }
 
         return $path.$this->getUrlSuffix();
+    }
+
+    public function getOriginalPath(): string
+    {
+        return parent::getPath();
     }
 
     public function getUrlPrefix(): string
@@ -127,20 +132,27 @@ class PageRoute extends Route implements RouteObjectInterface
     /**
      * Sets the object this URL points to.
      */
-    public function setContent($object): self
+    public function setContent(object|null $content): self
     {
-        $this->content = $object;
+        $this->content = $content;
 
         return $this;
     }
 
-    public function getContent()
+    public function getContent(): object|null
     {
         return $this->content;
     }
 
+    public function setRouteKey(string $routeKey): self
+    {
+        $this->routeKey = $routeKey;
+
+        return $this;
+    }
+
     public function getRouteKey(): string
     {
-        return 'tl_page.'.$this->pageModel->id;
+        return $this->routeKey;
     }
 }

@@ -19,41 +19,28 @@ use Symfony\Component\HttpKernel\Controller\ControllerResolverInterface;
 class ControllerResolver implements ControllerResolverInterface
 {
     /**
-     * @var ControllerResolverInterface
+     * @internal
      */
-    private $resolver;
-
-    /**
-     * @var FragmentRegistry
-     */
-    private $registry;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.controller_resolver" service instead
-     */
-    public function __construct(ControllerResolverInterface $resolver, FragmentRegistry $registry)
-    {
-        $this->resolver = $resolver;
-        $this->registry = $registry;
+    public function __construct(
+        private readonly ControllerResolverInterface $resolver,
+        private readonly FragmentRegistry $registry,
+    ) {
     }
 
-    public function getController(Request $request)
+    public function getController(Request $request): callable|false
     {
         if (
             $request->attributes->has('_controller')
             && \is_string($controller = $request->attributes->get('_controller'))
+            && ($fragmentConfig = $this->registry->get($controller))
         ) {
-            $fragmentConfig = $this->registry->get($controller);
-
-            if (null !== $fragmentConfig) {
-                $request->attributes->set('_controller', $fragmentConfig->getController());
-            }
+            $request->attributes->set('_controller', $fragmentConfig->getController());
         }
 
         return $this->resolver->getController($request);
     }
 
-    public function getArguments(Request $request, $controller): array
+    public function getArguments(Request $request, callable $controller): array
     {
         if (!method_exists($this->resolver, 'getArguments')) {
             return [];

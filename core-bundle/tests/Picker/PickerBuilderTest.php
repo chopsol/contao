@@ -18,16 +18,13 @@ use Contao\CoreBundle\Picker\PickerBuilder;
 use Contao\CoreBundle\Picker\PickerConfig;
 use Contao\TestCase\ContaoTestCase;
 use Knp\Menu\MenuFactory;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\Routing\RouterInterface;
-use Symfony\Component\Security\Core\Security;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
 class PickerBuilderTest extends ContaoTestCase
 {
-    /**
-     * @var PickerBuilder
-     */
-    private $builder;
+    private PickerBuilder $builder;
 
     protected function setUp(): void
     {
@@ -48,7 +45,7 @@ class PickerBuilderTest extends ContaoTestCase
         $router = $this->createMock(RouterInterface::class);
         $translator = $this->createMock(TranslatorInterface::class);
 
-        $pageProvider = new PagePickerProvider($factory, $router, null, $this->getSecurityHelper());
+        $pageProvider = new PagePickerProvider($factory, $router, $translator, $this->getSecurityHelper());
 
         $this->builder->addProvider($pageProvider);
 
@@ -76,8 +73,9 @@ class PickerBuilderTest extends ContaoTestCase
     {
         $factory = new MenuFactory();
         $router = $this->createMock(RouterInterface::class);
+        $translator = $this->createMock(TranslatorInterface::class);
 
-        $provider = new PagePickerProvider($factory, $router, null, $this->getSecurityHelper());
+        $provider = new PagePickerProvider($factory, $router, $translator, $this->getSecurityHelper());
 
         $this->builder->addProvider($provider);
 
@@ -91,8 +89,9 @@ class PickerBuilderTest extends ContaoTestCase
     {
         $factory = new MenuFactory();
         $router = $this->createMock(RouterInterface::class);
+        $translator = $this->createMock(TranslatorInterface::class);
 
-        $provider = new PagePickerProvider($factory, $router, null, $this->getSecurityHelper());
+        $provider = new PagePickerProvider($factory, $router, $translator, $this->getSecurityHelper());
 
         $this->builder->addProvider($provider);
 
@@ -103,8 +102,9 @@ class PickerBuilderTest extends ContaoTestCase
     {
         $factory = new MenuFactory();
         $router = $this->createMock(RouterInterface::class);
+        $translator = $this->createMock(TranslatorInterface::class);
 
-        $provider = new PagePickerProvider($factory, $router, null, $this->getSecurityHelper());
+        $provider = new PagePickerProvider($factory, $router, $translator, $this->getSecurityHelper());
 
         $this->builder->addProvider($provider);
 
@@ -117,8 +117,9 @@ class PickerBuilderTest extends ContaoTestCase
     {
         $factory = new MenuFactory();
         $router = $this->createMock(RouterInterface::class);
+        $translator = $this->createMock(TranslatorInterface::class);
 
-        $provider = new PagePickerProvider($factory, $router, null, $this->getSecurityHelper());
+        $provider = new PagePickerProvider($factory, $router, $translator, $this->getSecurityHelper());
 
         $this->builder->addProvider($provider);
 

@@ -15,34 +15,24 @@ namespace Contao\CalendarBundle\EventListener;
 use Contao\CalendarEventsModel;
 use Contao\CoreBundle\Event\PreviewUrlCreateEvent;
 use Contao\CoreBundle\Framework\ContaoFramework;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
 
 /**
  * @internal
  */
+#[AsEventListener]
 class PreviewUrlCreateListener
 {
-    /**
-     * @var RequestStack
-     */
-    private $requestStack;
-
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    public function __construct(RequestStack $requestStack, ContaoFramework $framework)
-    {
-        $this->requestStack = $requestStack;
-        $this->framework = $framework;
+    public function __construct(
+        private readonly RequestStack $requestStack,
+        private readonly ContaoFramework $framework,
+    ) {
     }
 
     /**
      * Adds the calendar ID to the front end preview URL.
-     *
-     * @throws \RuntimeException
      */
     public function __invoke(PreviewUrlCreateEvent $event): void
     {
@@ -50,9 +40,7 @@ class PreviewUrlCreateListener
             return;
         }
 
-        $request = $this->requestStack->getCurrentRequest();
-
-        if (null === $request) {
+        if (!$request = $this->requestStack->getCurrentRequest()) {
             throw new \RuntimeException('The request stack did not contain a request');
         }
 
@@ -61,17 +49,14 @@ class PreviewUrlCreateListener
             return;
         }
 
-        if (null === ($eventModel = $this->getEventModel($this->getId($event, $request)))) {
+        if ((!$id = $this->getId($event, $request)) || (!$eventModel = $this->getEventModel($id))) {
             return;
         }
 
         $event->setQuery('calendar='.$eventModel->id);
     }
 
-    /**
-     * @return int|string
-     */
-    private function getId(PreviewUrlCreateEvent $event, Request $request)
+    private function getId(PreviewUrlCreateEvent $event, Request $request): int|string
     {
         // Overwrite the ID if the event settings are edited
         if ('tl_calendar_events' === $request->query->get('table') && 'edit' === $request->query->get('act')) {
@@ -81,14 +66,8 @@ class PreviewUrlCreateListener
         return $event->getId();
     }
 
-    /**
-     * @param int|string $id
-     */
-    private function getEventModel($id): ?CalendarEventsModel
+    private function getEventModel(int|string $id): CalendarEventsModel|null
     {
-        /** @var CalendarEventsModel $adapter */
-        $adapter = $this->framework->getAdapter(CalendarEventsModel::class);
-
-        return $adapter->findByPk($id);
+        return $this->framework->getAdapter(CalendarEventsModel::class)->findById($id);
     }
 }

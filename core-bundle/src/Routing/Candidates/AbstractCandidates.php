@@ -20,33 +20,21 @@ class AbstractCandidates implements CandidatesInterface
     /**
      * A limit to apply to the number of candidates generated.
      *
-     * This is to prevent abusive requests with a lot of "/". The limit is per
-     * batch, that is if a locale matches you could get as many as 2 * $limit
-     * candidates if the URL has that many slashes.
-     *
-     * @var int
+     * This is to prevent abusive requests with a lot of "/". The limit is per batch,
+     * that is if a locale matches you could get as many as 2 * $limit candidates if
+     * the URL has that many slashes.
      */
     private const LIMIT = 20;
 
-    /**
-     * @var array
-     */
-    protected $urlPrefixes;
-
-    /**
-     * @var array
-     */
-    protected $urlSuffixes;
-
-    public function __construct(array $urlPrefixes, array $urlSuffixes)
-    {
-        $this->urlPrefixes = $urlPrefixes;
-        $this->urlSuffixes = $urlSuffixes;
+    public function __construct(
+        protected array $urlPrefixes,
+        protected array $urlSuffixes,
+    ) {
     }
 
-    public function isCandidate($name): bool
+    public function isCandidate(string $name): bool
     {
-        return 0 === strncmp($name, 'tl_page.', 8);
+        return str_starts_with($name, 'tl_page.');
     }
 
     public function restrictQuery($queryBuilder): void
@@ -54,8 +42,8 @@ class AbstractCandidates implements CandidatesInterface
     }
 
     /**
-     * Generates possible page aliases from the request path by removing
-     * prefixes, suffixes and parameters.
+     * Generates possible page aliases from the request path by removing prefixes,
+     * suffixes and parameters.
      *
      * Example 1:
      *   Path: /en/alias/foo/bar.html
@@ -85,15 +73,16 @@ class AbstractCandidates implements CandidatesInterface
         $url = $request->getPathInfo();
         $url = rawurldecode(substr($url, 1));
 
-        if (empty($url)) {
+        if ('' === $url) {
             throw new \RuntimeException(__METHOD__.' cannot handle empty path');
         }
 
         $candidates = [];
 
         foreach ($this->urlPrefixes as $prefix) {
-            // Language prefix only (e.g. URL = /en/)
-            if ($url === $prefix.'/') {
+            // Language prefix only, e.g. URL = /en or URL = /en/. If the trailing slash is
+            // missing, Contao will redirect to the URL with the slash.
+            if ($url === $prefix.'/' || $url === $prefix) {
                 $candidates[] = 'index';
                 continue;
             }
@@ -101,22 +90,22 @@ class AbstractCandidates implements CandidatesInterface
             $withoutPrefix = $url;
 
             if ('' !== $prefix) {
-                if (0 !== strncmp($url, $prefix.'/', \strlen($prefix) + 1)) {
+                if (0 !== strncmp($url, $prefix.'/', \strlen((string) $prefix) + 1)) {
                     continue;
                 }
 
-                $withoutPrefix = substr($url, \strlen($prefix) + 1);
+                $withoutPrefix = substr($url, \strlen((string) $prefix) + 1);
             }
 
             foreach ($this->urlSuffixes as $suffix) {
                 $withoutSuffix = $withoutPrefix;
 
                 if ('' !== $suffix) {
-                    if (0 !== substr_compare($withoutPrefix, $suffix, -\strlen($suffix))) {
+                    if (!str_ends_with($withoutPrefix, $suffix)) {
                         continue;
                     }
 
-                    $withoutSuffix = substr($withoutPrefix, 0, -\strlen($suffix));
+                    $withoutSuffix = substr($withoutPrefix, 0, -\strlen((string) $suffix));
                 }
 
                 $this->addCandidatesFor($withoutSuffix, $candidates);

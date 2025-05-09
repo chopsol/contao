@@ -25,18 +25,14 @@ use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 
 class PageUrlGeneratorTest extends TestCase
 {
-    /**
-     * @var PageRegistry&MockObject
-     */
-    private $pageRegistry;
+    private PageUrlGenerator $generator;
 
-    /**
-     * @var PageUrlGenerator
-     */
-    private $generator;
+    private PageRegistry&MockObject $pageRegistry;
 
     protected function setUp(): void
     {
+        parent::setUp();
+
         $provider = $this->createMock(RouteProviderInterface::class);
 
         $this->pageRegistry = $this->createMock(PageRegistry::class);
@@ -45,7 +41,6 @@ class PageUrlGeneratorTest extends TestCase
 
     public function testGeneratesThePageRoute(): void
     {
-        /** @var PageModel&MockObject $page */
         $page = $this->mockClassWithProperties(PageModel::class, [
             'id' => 17,
             'alias' => 'foobar',
@@ -54,6 +49,8 @@ class PageUrlGeneratorTest extends TestCase
             'rootUseSSL' => true,
             'urlPrefix' => 'some-language',
             'urlSuffix' => '.html',
+            'language' => 'en',
+            'rootLanguage' => 'en',
         ]);
 
         $route = new PageRoute($page);
@@ -66,9 +63,9 @@ class PageUrlGeneratorTest extends TestCase
         ;
 
         $url = $this->generator->generate(
-            RouteObjectInterface::OBJECT_BASED_ROUTE_NAME,
+            PageRoute::PAGE_BASED_ROUTE_NAME,
             [RouteObjectInterface::CONTENT_OBJECT => $page],
-            UrlGeneratorInterface::ABSOLUTE_URL
+            UrlGeneratorInterface::ABSOLUTE_URL,
         );
 
         $this->assertSame('https://www.example.com/some-language/foobar.html', $url);
@@ -76,7 +73,6 @@ class PageUrlGeneratorTest extends TestCase
 
     public function testReplacesTheRoutePathForTheIndexRouteWithoutParameters(): void
     {
-        /** @var PageModel&MockObject $page */
         $page = $this->mockClassWithProperties(PageModel::class, [
             'id' => 17,
             'alias' => 'index',
@@ -85,6 +81,8 @@ class PageUrlGeneratorTest extends TestCase
             'rootUseSSL' => true,
             'urlPrefix' => 'en',
             'urlSuffix' => '.html',
+            'language' => 'en',
+            'rootLanguage' => 'en',
         ]);
 
         $route = new PageRoute($page, '/index{!parameters}', ['parameters' => ''], ['parameters' => '(/.+)?']);
@@ -97,9 +95,9 @@ class PageUrlGeneratorTest extends TestCase
         ;
 
         $url = $this->generator->generate(
-            RouteObjectInterface::OBJECT_BASED_ROUTE_NAME,
+            PageRoute::PAGE_BASED_ROUTE_NAME,
             [RouteObjectInterface::CONTENT_OBJECT => $page],
-            UrlGeneratorInterface::ABSOLUTE_URL
+            UrlGeneratorInterface::ABSOLUTE_URL,
         );
 
         $this->assertSame('https://www.example.com/en/', $url);
@@ -107,7 +105,6 @@ class PageUrlGeneratorTest extends TestCase
 
     public function testReplacesTheRoutePathForTheIndexRouteWithEmptyParameters(): void
     {
-        /** @var PageModel&MockObject $page */
         $page = $this->mockClassWithProperties(PageModel::class, [
             'id' => 17,
             'alias' => 'index',
@@ -116,6 +113,8 @@ class PageUrlGeneratorTest extends TestCase
             'rootUseSSL' => true,
             'urlPrefix' => 'en',
             'urlSuffix' => '.html',
+            'language' => 'en',
+            'rootLanguage' => 'en',
         ]);
 
         $route = new PageRoute($page, '/index{!parameters}', ['parameters' => ''], ['parameters' => '(/.+)?']);
@@ -128,9 +127,9 @@ class PageUrlGeneratorTest extends TestCase
         ;
 
         $url = $this->generator->generate(
-            RouteObjectInterface::OBJECT_BASED_ROUTE_NAME,
+            PageRoute::PAGE_BASED_ROUTE_NAME,
             [RouteObjectInterface::CONTENT_OBJECT => $page, 'parameters' => null],
-            UrlGeneratorInterface::ABSOLUTE_URL
+            UrlGeneratorInterface::ABSOLUTE_URL,
         );
 
         $this->assertSame('https://www.example.com/en/', $url);
@@ -138,7 +137,6 @@ class PageUrlGeneratorTest extends TestCase
 
     public function testDoesNotReplaceTheRoutePathForTheIndexRouteWithParameters(): void
     {
-        /** @var PageModel&MockObject $page */
         $page = $this->mockClassWithProperties(PageModel::class, [
             'id' => 17,
             'alias' => 'index',
@@ -147,6 +145,8 @@ class PageUrlGeneratorTest extends TestCase
             'rootUseSSL' => true,
             'urlPrefix' => 'en',
             'urlSuffix' => '.html',
+            'language' => 'en',
+            'rootLanguage' => 'en',
         ]);
 
         $route = new PageRoute($page, '/index{!parameters}', ['parameters' => ''], ['parameters' => '(/.+)?']);
@@ -159,9 +159,9 @@ class PageUrlGeneratorTest extends TestCase
         ;
 
         $url = $this->generator->generate(
-            RouteObjectInterface::OBJECT_BASED_ROUTE_NAME,
+            PageRoute::PAGE_BASED_ROUTE_NAME,
             [RouteObjectInterface::CONTENT_OBJECT => $page, 'parameters' => '/foobar'],
-            UrlGeneratorInterface::ABSOLUTE_URL
+            UrlGeneratorInterface::ABSOLUTE_URL,
         );
 
         $this->assertSame('https://www.example.com/en/index/foobar.html', $url);
@@ -169,7 +169,6 @@ class PageUrlGeneratorTest extends TestCase
 
     public function testDoesNotReplaceTheRoutePathForTheIndexRouteWithDefaultParameters(): void
     {
-        /** @var PageModel&MockObject $page */
         $page = $this->mockClassWithProperties(PageModel::class, [
             'id' => 17,
             'alias' => 'index',
@@ -178,6 +177,8 @@ class PageUrlGeneratorTest extends TestCase
             'rootUseSSL' => true,
             'urlPrefix' => 'en',
             'urlSuffix' => '.html',
+            'language' => 'en',
+            'rootLanguage' => 'en',
         ]);
 
         $route = new PageRoute($page, '{foo}', ['foo' => 'foo'], ['foo' => '[a-z]+']);
@@ -190,9 +191,9 @@ class PageUrlGeneratorTest extends TestCase
         ;
 
         $url = $this->generator->generate(
-            RouteObjectInterface::OBJECT_BASED_ROUTE_NAME,
+            PageRoute::PAGE_BASED_ROUTE_NAME,
             [RouteObjectInterface::CONTENT_OBJECT => $page],
-            UrlGeneratorInterface::ABSOLUTE_URL
+            UrlGeneratorInterface::ABSOLUTE_URL,
         );
 
         $this->assertSame('https://www.example.com/en/index/foo.html', $url);
@@ -200,7 +201,6 @@ class PageUrlGeneratorTest extends TestCase
 
     public function testThrowsRouteParametersExceptionOnMissingParameters(): void
     {
-        /** @var PageModel&MockObject $page */
         $page = $this->mockClassWithProperties(PageModel::class, [
             'id' => 17,
             'alias' => 'foo',
@@ -209,6 +209,8 @@ class PageUrlGeneratorTest extends TestCase
             'rootUseSSL' => true,
             'urlPrefix' => 'en',
             'urlSuffix' => '.html',
+            'language' => 'en',
+            'rootLanguage' => 'en',
         ]);
 
         $route = new PageRoute($page, '{foo}', [], ['foo' => '[a-z]+']);
@@ -224,9 +226,9 @@ class PageUrlGeneratorTest extends TestCase
 
         try {
             $this->generator->generate(
-                RouteObjectInterface::OBJECT_BASED_ROUTE_NAME,
+                PageRoute::PAGE_BASED_ROUTE_NAME,
                 [RouteObjectInterface::CONTENT_OBJECT => $page, 'bar' => 'baz'],
-                UrlGeneratorInterface::NETWORK_PATH
+                UrlGeneratorInterface::NETWORK_PATH,
             );
         } catch (RouteParametersException $exception) {
             $this->assertSame($route, $exception->getRoute());

@@ -13,17 +13,17 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Tests\Crawl\Monolog;
 
 use Contao\CoreBundle\Crawl\Monolog\CrawlCsvLogHandler;
+use Monolog\Level;
+use Monolog\LogRecord;
 use Nyholm\Psr7\Uri;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
-use Symfony\Bridge\Monolog\Logger;
 use Terminal42\Escargot\CrawlUri;
 
 class CrawlCsvLogHandlerTest extends TestCase
 {
-    /**
-     * @dataProvider writesCsvStreamProvider
-     */
-    public function testWritesCsvStream(\DateTime $dt, array $context, string $expectedContent, string $existingCsvContent = '', $message = 'foobar'): void
+    #[DataProvider('writesCsvStreamProvider')]
+    public function testWritesCsvStream(\DateTimeImmutable $dt, array $context, string $expectedContent, string $existingCsvContent = '', string $message = 'foobar'): void
     {
         $stream = fopen('php://memory', 'r+');
 
@@ -31,8 +31,10 @@ class CrawlCsvLogHandlerTest extends TestCase
             fwrite($stream, $existingCsvContent);
         }
 
+        $record = $this->getRecord($dt, $message, $context);
+
         $handler = new CrawlCsvLogHandler($stream);
-        $handler->handle(['level' => Logger::DEBUG, 'message' => $message, 'extra' => [], 'context' => $context, 'datetime' => $dt]);
+        $handler->handle($record);
 
         rewind($stream);
         $content = stream_get_contents($stream);
@@ -42,19 +44,17 @@ class CrawlCsvLogHandlerTest extends TestCase
 
     public function testSourceFilter(): void
     {
-        $dt = new \DateTime();
+        $dt = new \DateTimeImmutable();
         $formattedDt = '"'.$dt->format(CrawlCsvLogHandler::DATETIME_FORMAT).'"';
 
-        $record = [
-            'level' => Logger::DEBUG,
-            'message' => 'foobar',
-            'extra' => [],
-            'datetime' => $dt,
-            'context' => [
+        $record = $this->getRecord(
+            $dt,
+            'foobar',
+            [
                 'source' => 'source',
                 'crawlUri' => new CrawlUri(new Uri('https://contao.org'), 0),
             ],
-        ];
+        );
 
         $stream = fopen('php://memory', 'r+');
         $handler = new CrawlCsvLogHandler($stream);
@@ -75,9 +75,9 @@ class CrawlCsvLogHandlerTest extends TestCase
         $this->assertSame('Time,Source,URI,"Found on URI","Found on level",Tags,Message'."\n".$formattedDt.',source,https://contao.org/,,0,,foobar'."\n", $content);
     }
 
-    public function writesCsvStreamProvider(): \Generator
+    public static function writesCsvStreamProvider(): iterable
     {
-        $dt = new \DateTime();
+        $dt = new \DateTimeImmutable();
         $formattedDt = '"'.$dt->format(CrawlCsvLogHandler::DATETIME_FORMAT).'"';
 
         yield 'Should not write anything if the source is missing' => [
@@ -119,5 +119,10 @@ class CrawlCsvLogHandlerTest extends TestCase
             'Time,Source,URI,"Found on URI","Found on level",Tags,Message'."\n",
             "foobar\rwith\nnew\r\nlines",
         ];
+    }
+
+    private function getRecord(\DateTimeImmutable $dt, string $message, array $context): LogRecord
+    {
+        return new LogRecord($dt, 'test', Level::Debug, $message, $context, []);
     }
 }

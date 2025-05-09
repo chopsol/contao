@@ -16,52 +16,49 @@ use Contao\CoreBundle\Event\RobotsTxtEvent;
 use Contao\CoreBundle\EventListener\RobotsTxtListener;
 use Contao\CoreBundle\Tests\TestCase;
 use Contao\PageModel;
-use PHPUnit\Framework\MockObject\MockObject;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Symfony\Bundle\WebProfilerBundle\EventListener\WebDebugToolbarListener;
 use Symfony\Component\HttpFoundation\Request;
+use webignition\RobotsTxt\Directive\DirectiveInterface;
+use webignition\RobotsTxt\DirectiveList\DirectiveList;
+use webignition\RobotsTxt\File\File;
 use webignition\RobotsTxt\File\Parser;
+use webignition\RobotsTxt\Record\Record;
 
 class RobotsTxtListenerTest extends TestCase
 {
-    /**
-     * @dataProvider disallowProvider
-     */
-    public function testRobotsTxt(string $providedRobotsTxt, string $expectedRobotsTxt): void
+    #[DataProvider('disallowProvider')]
+    public function testRobotsTxt(string $providedRobotsTxt, bool|null $withWebProfiler, string $expectedRobotsTxt): void
     {
-        /** @var PageModel&MockObject $rootPage */
         $rootPage = $this->mockClassWithProperties(PageModel::class);
         $rootPage->id = 42;
-        $rootPage->fallback = '1';
+        $rootPage->fallback = true;
         $rootPage->dns = 'www.foobar.com';
+        $rootPage->useSSL = true;
 
-        /** @var PageModel&MockObject $otherRootPage */
-        $otherRootPage = $this->mockClassWithProperties(PageModel::class);
-        $otherRootPage->id = 99;
-        $otherRootPage->fallback = '';
-        $otherRootPage->dns = 'www.foobar.com';
-        $otherRootPage->createSitemap = '1';
-        $otherRootPage->sitemapName = 'sitemap-name';
-        $otherRootPage->useSSL = '1';
-
-        $pageModelAdapter = $this->mockAdapter(['findPublishedRootPages']);
-        $pageModelAdapter
-            ->expects($this->exactly(2))
-            ->method('findPublishedRootPages')
-            ->willReturn([$rootPage, $otherRootPage])
-        ;
-
-        $framework = $this->mockContaoFramework([PageModel::class => $pageModelAdapter]);
+        $framework = $this->mockContaoFramework();
         $framework
             ->expects($this->exactly(2))
             ->method('initialize')
         ;
 
+        $webDebugToolbar = null;
+
+        if (\is_bool($withWebProfiler)) {
+            $webDebugToolbar = $this->createMock(WebDebugToolbarListener::class);
+            $webDebugToolbar
+                ->expects($this->atLeastOnce())
+                ->method('isEnabled')
+                ->willReturn($withWebProfiler)
+            ;
+        }
+
         $parser = new Parser();
         $parser->setSource($providedRobotsTxt);
-        $file = $parser->getFile();
 
-        $event = new RobotsTxtEvent($file, new Request(), $rootPage);
+        $event = new RobotsTxtEvent($parser->getFile(), Request::create('https://www.example.org/robots.txt'), $rootPage);
 
-        $listener = new RobotsTxtListener($framework);
+        $listener = new RobotsTxtListener($framework, $webDebugToolbar);
         $listener($event);
 
         // Output should be the same, if there is another listener
@@ -70,49 +67,154 @@ class RobotsTxtListenerTest extends TestCase
         $this->assertSame($expectedRobotsTxt, (string) $event->getFile());
     }
 
-    public function disallowProvider(): \Generator
+    public static function disallowProvider(): iterable
     {
         yield 'Empty robots.txt content in root page' => [
             '',
+            null,
             <<<'EOF'
-user-agent:*
-disallow:/contao/
+                user-agent:*
+                disallow:/contao/
+                disallow:/_contao/
 
-sitemap:https://www.foobar.com/share/sitemap-name.xml
-EOF
+                sitemap:https://www.foobar.com/sitemap.xml
+                EOF,
         ];
 
         yield 'Tests merging with existing user-agent' => [
             <<<'EOF'
-user-agent:*
-allow:/
-EOF
-            ,
+                user-agent:*
+                allow:/
+                EOF,
+            null,
             <<<'EOF'
-user-agent:*
-allow:/
-disallow:/contao/
+                user-agent:*
+                allow:/
+                disallow:/contao/
+                disallow:/_contao/
 
-sitemap:https://www.foobar.com/share/sitemap-name.xml
-EOF
+                sitemap:https://www.foobar.com/sitemap.xml
+                EOF,
         ];
 
         yield 'Tests works with specific user-agent' => [
             <<<'EOF'
-user-agent:googlebot
-allow:/
-EOF
-            ,
+                user-agent:googlebot
+                allow:/
+                EOF,
+            null,
             <<<'EOF'
-user-agent:googlebot
-allow:/
-disallow:/contao/
+                user-agent:googlebot
+                allow:/
+                disallow:/contao/
+                disallow:/_contao/
 
-user-agent:*
-disallow:/contao/
+                user-agent:*
+                disallow:/contao/
+                disallow:/_contao/
 
-sitemap:https://www.foobar.com/share/sitemap-name.xml
-EOF
+                sitemap:https://www.foobar.com/sitemap.xml
+                EOF,
         ];
+
+        yield 'Empty robots.txt with web profiler enabled' => [
+            '',
+            true,
+            <<<'EOF'
+                user-agent:*
+                disallow:/contao/
+                disallow:/_contao/
+                disallow:/_profiler/
+                disallow:/_wdt/
+
+                sitemap:https://www.foobar.com/sitemap.xml
+                EOF,
+        ];
+
+        yield 'Multiple user-agents with web profiler enabled' => [
+            <<<'EOF'
+                user-agent:googlebot
+                allow:/
+                EOF,
+            true,
+            <<<'EOF'
+                user-agent:googlebot
+                allow:/
+                disallow:/contao/
+                disallow:/_contao/
+                disallow:/_profiler/
+                disallow:/_wdt/
+
+                user-agent:*
+                disallow:/contao/
+                disallow:/_contao/
+                disallow:/_profiler/
+                disallow:/_wdt/
+
+                sitemap:https://www.foobar.com/sitemap.xml
+                EOF,
+        ];
+
+        yield 'Empty robots.txt with web profiler disabled' => [
+            '',
+            false,
+            <<<'EOF'
+                user-agent:*
+                disallow:/contao/
+                disallow:/_contao/
+
+                sitemap:https://www.foobar.com/sitemap.xml
+                EOF,
+        ];
+    }
+
+    #[DataProvider('routePrefixProvider')]
+    public function testHandlesDynamicRoutePrefixes(string $routePrefix): void
+    {
+        $rootPage = $this->mockClassWithProperties(PageModel::class);
+
+        $expected = [
+            'disallow:'.$routePrefix.'/',
+            'disallow:/_contao/',
+        ];
+
+        $directiveList = $this->createMock(DirectiveList::class);
+        $directiveList
+            ->expects($this->exactly(2))
+            ->method('add')
+            ->with($this->callback(
+                static function (DirectiveInterface $directive) use (&$expected) {
+                    $pos = array_search((string) $directive, $expected, true);
+                    unset($expected[$pos]);
+
+                    return false !== $pos;
+                },
+            ))
+        ;
+
+        $record = $this->createMock(Record::class);
+        $record
+            ->method('getDirectiveList')
+            ->willReturn($directiveList)
+        ;
+
+        $file = $this->createPartialMock(File::class, ['getRecords']);
+        $file
+            ->method('getRecords')
+            ->willReturn([$record])
+        ;
+
+        $event = new RobotsTxtEvent($file, Request::create('https://www.example.org/robots.txt'), $rootPage);
+        $framework = $this->mockContaoFramework();
+
+        $listener = new RobotsTxtListener($framework, null, $routePrefix);
+        $listener($event);
+    }
+
+    public static function routePrefixProvider(): iterable
+    {
+        yield ['/contao'];
+        yield ['/admin'];
+        yield ['/foo'];
     }
 }

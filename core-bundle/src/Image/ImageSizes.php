@@ -15,54 +15,26 @@ namespace Contao\CoreBundle\Image;
 use Contao\BackendUser;
 use Contao\CoreBundle\Event\ContaoCoreEvents;
 use Contao\CoreBundle\Event\ImageSizesEvent;
-use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\CoreBundle\Translation\Translator;
 use Contao\StringUtil;
 use Doctrine\DBAL\Connection;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Contracts\Service\ResetInterface;
+use Symfony\Contracts\Translation\TranslatorInterface;
 
 class ImageSizes implements ResetInterface
 {
-    /**
-     * @var Connection
-     */
-    private $connection;
+    private array $predefinedSizes = [];
+
+    private array|null $options = null;
 
     /**
-     * @var EventDispatcherInterface
+     * @internal
      */
-    private $eventDispatcher;
-
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    /**
-     * @var Translator
-     */
-    private $translator;
-
-    /**
-     * @var array
-     */
-    private $predefinedSizes = [];
-
-    /**
-     * @var array|null
-     */
-    private $options;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.image.image_sizes" service instead
-     */
-    public function __construct(Connection $connection, EventDispatcherInterface $eventDispatcher, ContaoFramework $framework, Translator $translator)
-    {
-        $this->connection = $connection;
-        $this->eventDispatcher = $eventDispatcher;
-        $this->framework = $framework;
-        $this->translator = $translator;
+    public function __construct(
+        private readonly Connection $connection,
+        private readonly EventDispatcherInterface $eventDispatcher,
+        private readonly TranslatorInterface $translator,
+    ) {
     }
 
     /**
@@ -102,10 +74,8 @@ class ImageSizes implements ResetInterface
             $event = new ImageSizesEvent($this->options, $user);
         } else {
             $options = array_map(
-                static function ($val) {
-                    return is_numeric($val) ? (int) $val : $val;
-                },
-                StringUtil::deserialize($user->imageSizes, true)
+                static fn ($val) => is_numeric($val) ? (int) $val : $val,
+                StringUtil::deserialize($user->imageSizes, true),
             );
 
             $event = new ImageSizesEvent($this->filterOptions($options), $user);
@@ -130,36 +100,34 @@ class ImageSizes implements ResetInterface
             return;
         }
 
-        // The framework is required to have the TL_CROP options available
-        $this->framework->initialize();
-
-        $this->options = $GLOBALS['TL_CROP'];
-
-        $rows = $this->connection->fetchAll(
-            'SELECT
-                s.id, s.name, s.width, s.height, t.name as theme
-            FROM
-                tl_image_size s
-            LEFT JOIN
-                tl_theme t ON s.pid=t.id
-            ORDER BY
-                s.pid, s.name'
+        $rows = $this->connection->fetchAllAssociative(
+            <<<'SQL'
+                SELECT
+                    s.id,
+                    s.name,
+                    s.width,
+                    s.height,
+                    t.name as theme
+                FROM tl_image_size s
+                LEFT JOIN tl_theme t ON s.pid = t.id
+                ORDER BY s.pid, s.name
+                SQL,
         );
 
         $options = [];
 
         foreach ($this->predefinedSizes as $name => $imageSize) {
-            $options['image_sizes'][$name] = sprintf(
+            $options['image_sizes'][$name] = \sprintf(
                 '%s (%sx%s)',
                 $this->translator->trans(substr($name, 1), [], 'image_sizes') ?: substr($name, 1),
                 $imageSize['width'] ?? '',
-                $imageSize['height'] ?? ''
+                $imageSize['height'] ?? '',
             );
         }
 
         foreach ($rows as $imageSize) {
             // Prefix theme names that are numeric or collide with existing group names
-            if (is_numeric($imageSize['theme']) || \in_array($imageSize['theme'], ['exact', 'relative', 'image_sizes'], true)) {
+            if (is_numeric($imageSize['theme']) || \in_array($imageSize['theme'], ['custom', 'image_sizes', 'exact', 'relative'], true)) {
                 $imageSize['theme'] = 'Theme '.$imageSize['theme'];
             }
 
@@ -167,15 +135,18 @@ class ImageSizes implements ResetInterface
                 $options[$imageSize['theme']] = [];
             }
 
-            $options[$imageSize['theme']][$imageSize['id']] = sprintf(
+            $options[$imageSize['theme']][$imageSize['id']] = \sprintf(
                 '%s (%sx%s)',
                 $imageSize['name'],
                 $imageSize['width'],
-                $imageSize['height']
+                $imageSize['height'],
             );
         }
 
-        $this->options = array_merge_recursive($options, $this->options);
+        $this->options = array_merge_recursive($options, [
+            'image_sizes' => [],
+            'custom' => ['crop', 'proportional', 'box'],
+        ]);
     }
 
     /**
@@ -185,14 +156,14 @@ class ImageSizes implements ResetInterface
      */
     private function filterOptions(array $allowedSizes): array
     {
-        if (empty($allowedSizes)) {
+        if (!$allowedSizes) {
             return [];
         }
 
         $filteredSizes = [];
 
         foreach ($this->options as $group => $sizes) {
-            if ('relative' === $group || 'exact' === $group) {
+            if ('custom' === $group || 'relative' === $group || 'exact' === $group) {
                 $this->filterResizeModes($sizes, $allowedSizes, $filteredSizes, $group);
             } else {
                 $this->filterImageSizes($sizes, $allowedSizes, $filteredSizes, $group);

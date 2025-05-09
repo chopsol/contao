@@ -21,15 +21,9 @@ use Symfony\Component\Console\Tester\CommandTester;
 
 class SetConfigCommandTest extends TestCase
 {
-    /**
-     * @var ManagerConfig&MockObject
-     */
-    private $config;
+    private ManagerConfig&MockObject $config;
 
-    /**
-     * @var SetConfigCommand
-     */
-    private $command;
+    private SetConfigCommand $command;
 
     protected function setUp(): void
     {
@@ -69,8 +63,8 @@ class SetConfigCommandTest extends TestCase
 
     public function testThrowsExceptionWhenJsonIsInvalid(): void
     {
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Invalid JSON:');
+        $this->expectException(\JsonException::class);
+        $this->expectExceptionMessage('Syntax error');
 
         $commandTester = new CommandTester($this->command);
         $commandTester->execute(['json' => 'foobar']);

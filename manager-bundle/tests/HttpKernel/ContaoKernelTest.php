@@ -23,66 +23,76 @@ use Contao\ManagerPlugin\Bundle\Config\BundleConfig;
 use Contao\ManagerPlugin\Config\ConfigPluginInterface;
 use Contao\ManagerPlugin\PluginLoader;
 use Contao\TestCase\ContaoTestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\MockObject\MockObject;
 use Symfony\Component\Config\Loader\LoaderInterface;
+use Symfony\Component\Config\Resource\ClassExistenceResource;
 use Symfony\Component\Console\Input\ArgvInput;
+use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\ParameterBag\EnvPlaceholderParameterBag;
 use Symfony\Component\Filesystem\Filesystem;
+use Symfony\Component\Filesystem\Path;
 use Symfony\Component\HttpFoundation\Request;
-use Webmozart\PathUtil\Path;
 
 class ContaoKernelTest extends ContaoTestCase
 {
+    private array|string|false $shellVerbosityBackup;
+
     protected function setUp(): void
     {
         parent::setUp();
 
-        // Reset the ContaoKernel static properties
-        $reflection = new \ReflectionClass(ContaoKernel::class);
+        $this->backupServerEnvGetPost();
 
-        $prop = $reflection->getProperty('projectDir');
-        $prop->setAccessible(true);
-        $prop->setValue(null);
+        $_ENV['APP_ENV'] = $_SERVER['APP_ENV'] = 'prod';
 
-        // Reset the manager-bundle Plugin static properties
-        $reflection = new \ReflectionClass(ManagerPlugin::class);
-
-        $prop = $reflection->getProperty('autoloadModules');
-        $prop->setAccessible(true);
-        $prop->setValue(null);
-
-        // Reset the Request static properties
-        $reflection = new \ReflectionClass(Request::class);
-
-        $prop = $reflection->getProperty('trustedProxies');
-        $prop->setAccessible(true);
-        $prop->setValue([]);
-
-        $prop = $reflection->getProperty('trustedHostPatterns');
-        $prop->setAccessible(true);
-        $prop->setValue([]);
-
-        $prop = $reflection->getProperty('trustedHeaderSet');
-        $prop->setAccessible(true);
-        $prop->setValue(-1);
-
-        $prop = $reflection->getProperty('httpMethodParameterOverride');
-        $prop->setAccessible(true);
-        $prop->setValue(false);
-
-        $filesystem = new Filesystem();
-        $filesystem->remove(__DIR__.'/../Fixtures/HttpKernel/WithAppNamespace/var');
-        $filesystem->remove(__DIR__.'/../Fixtures/HttpKernel/WithInvalidNamespace/var');
-        $filesystem->remove(__DIR__.'/../Fixtures/HttpKernel/WithMixedNamespace/var');
+        $this->shellVerbosityBackup = getenv('SHELL_VERBOSITY');
     }
 
     protected function tearDown(): void
     {
-        parent::tearDown();
-
         $filesystem = new Filesystem();
         $filesystem->remove(__DIR__.'/../Fixtures/HttpKernel/WithAppNamespace/var');
         $filesystem->remove(__DIR__.'/../Fixtures/HttpKernel/WithInvalidNamespace/var');
         $filesystem->remove(__DIR__.'/../Fixtures/HttpKernel/WithMixedNamespace/var');
+
+        putenv('SHELL_VERBOSITY'.(false === $this->shellVerbosityBackup ? '' : '='.$this->shellVerbosityBackup));
+
+        $this->restoreServerEnvGetPost();
+        $this->resetStaticProperties([ManagerPlugin::class, ContaoKernel::class, Request::class, EnvPlaceholderParameterBag::class, ClassExistenceResource::class]);
+
+        parent::tearDown();
+    }
+
+    public function testResetsTheBundleLoaderOnShutdown(): void
+    {
+        $bundleLoader = $this->createMock(BundleLoader::class);
+
+        $kernel = $this->getKernel($this->getTempDir());
+        $kernel->setBundleLoader($bundleLoader);
+        $kernel->boot();
+
+        $this->assertSame($bundleLoader, $kernel->getBundleLoader());
+
+        $kernel->shutdown();
+
+        $this->assertNotSame($bundleLoader, $kernel->getBundleLoader());
+    }
+
+    public function testDoesNotResetsTheBundleLoaderOnShutdownIfKernelIsNotBooted(): void
+    {
+        $bundleLoader = $this->createMock(BundleLoader::class);
+
+        $kernel = $this->getKernel($this->getTempDir());
+        $kernel->setBundleLoader($bundleLoader);
+
+        $this->assertSame($bundleLoader, $kernel->getBundleLoader());
+
+        $kernel->shutdown();
+
+        $this->assertSame($bundleLoader, $kernel->getBundleLoader());
     }
 
     public function testRegisterBundles(): void
@@ -103,6 +113,7 @@ class ContaoKernelTest extends ContaoTestCase
         $this->assertArrayNotHasKey(AppBundle::class, $bundles);
     }
 
+    #[RunInSeparateProcess]
     public function testRegistersAppBundle(): void
     {
         $bundleLoader = $this->createMock(BundleLoader::class);
@@ -132,23 +143,13 @@ class ContaoKernelTest extends ContaoTestCase
         $kernel->getProjectDir();
     }
 
-    public function testGetRootDir(): void
-    {
-        $kernel = $this->getKernel($this->getTempDir());
-
-        $this->assertSame(
-            Path::normalize($kernel->getProjectDir()).'/app',
-            Path::normalize($kernel->getRootDir())
-        );
-    }
-
     public function testGetCacheDir(): void
     {
         $kernel = $this->getKernel($this->getTempDir());
 
         $this->assertSame(
             Path::normalize($kernel->getProjectDir()).'/var/cache/prod',
-            Path::normalize($kernel->getCacheDir())
+            Path::normalize($kernel->getCacheDir()),
         );
     }
 
@@ -158,7 +159,7 @@ class ContaoKernelTest extends ContaoTestCase
 
         $this->assertSame(
             Path::normalize($kernel->getProjectDir()).'/var/logs',
-            Path::normalize($kernel->getLogDir())
+            Path::normalize($kernel->getLogDir()),
         );
     }
 
@@ -185,20 +186,30 @@ class ContaoKernelTest extends ContaoTestCase
         $this->assertSame(['foo/bar'], $pluginLoader->getDisabledPackages());
     }
 
-    /**
-     * @dataProvider containerConfigurationProvider
-     */
+    #[DataProvider('containerConfigurationProvider')]
     public function testRegisterContainerConfiguration(string $projectDir, string $env, array $expectedResult): void
     {
         $files = [];
+
+        $container = $this->createMock(ContainerBuilder::class);
+        $container
+            ->method('fileExists')
+            ->willReturnCallback(static fn (string $path) => \in_array(basename($path), $expectedResult, true))
+        ;
 
         $loader = $this->createMock(LoaderInterface::class);
         $loader
             ->method('load')
             ->willReturnCallback(
-                static function ($resource) use (&$files): void {
+                static function ($resource) use ($container, $env, &$files) {
+                    if ($resource instanceof \Closure) {
+                        return $resource($container, $env);
+                    }
+
                     $files[] = basename($resource);
-                }
+
+                    return null;
+                },
             )
         ;
 
@@ -208,30 +219,42 @@ class ContaoKernelTest extends ContaoTestCase
         $this->assertSame($expectedResult, $files);
     }
 
-    public function containerConfigurationProvider(): \Generator
+    public static function containerConfigurationProvider(): iterable
     {
         yield [
             __DIR__.'/../Fixtures/HttpKernel/WithParametersYml',
             'prod',
-            ['parameters.yml', 'parameters.yml'],
+            ['parameters.yaml', 'parameters.yaml'],
         ];
 
         yield [
             __DIR__.'/../Fixtures/HttpKernel/WithConfigDevYml',
             'dev',
-            ['config_dev.yml'],
+            ['config_dev.yaml'],
         ];
 
         yield [
             __DIR__.'/../Fixtures/HttpKernel/WithConfigYml',
             'prod',
-            ['config.yml'],
+            ['config.yaml'],
         ];
 
         yield [
             __DIR__.'/../Fixtures/HttpKernel/WithConfigsYml',
             'prod',
-            ['config_prod.yml', 'services.yml'],
+            ['config_prod.yaml', 'services.yaml'],
+        ];
+
+        yield [
+            __DIR__.'/../Fixtures/HttpKernel/WithConfigsPhp',
+            'prod',
+            ['services.php'],
+        ];
+
+        yield [
+            __DIR__.'/../Fixtures/HttpKernel/WithConfigsXml',
+            'prod',
+            ['services.xml'],
         ];
 
         yield [
@@ -241,7 +264,7 @@ class ContaoKernelTest extends ContaoTestCase
         ];
 
         yield [
-            $this->getTempDir(),
+            static::getTempDir(),
             'prod',
             [],
         ];
@@ -249,7 +272,21 @@ class ContaoKernelTest extends ContaoTestCase
 
     public function testRegisterContainerConfigurationLoadsPlugins(): void
     {
+        $container = $this->createMock(ContainerBuilder::class);
+
         $loader = $this->createMock(LoaderInterface::class);
+        $loader
+            ->method('load')
+            ->willReturnCallback(
+                static function ($resource) use ($container) {
+                    if ($resource instanceof \Closure) {
+                        return $resource($container, 'prod');
+                    }
+
+                    return null;
+                },
+            )
+        ;
 
         $pluginLoader = $this->createMock(PluginLoader::class);
         $pluginLoader
@@ -281,27 +318,33 @@ class ContaoKernelTest extends ContaoTestCase
         ContaoKernel::fromRequest($this->getTempDir(), Request::create('/'));
 
         $this->assertSame(['1.1.1.1', '2.2.2.2'], Request::getTrustedProxies());
-        $this->assertSame(Request::HEADER_X_FORWARDED_ALL ^ Request::HEADER_X_FORWARDED_HOST, Request::getTrustedHeaderSet());
+        $this->assertSame(Request::HEADER_X_FORWARDED_FOR | Request::HEADER_X_FORWARDED_PORT | Request::HEADER_X_FORWARDED_PROTO, Request::getTrustedHeaderSet());
+
+        unset($_SERVER['TRUSTED_PROXIES']);
     }
 
     public function testSetsRequestTrustedHostsFromEnvVars(): void
     {
         $this->assertSame([], Request::getTrustedHosts());
 
-        $_SERVER['TRUSTED_HOSTS'] = '1.1.1.1,2.2.2.2';
+        $_SERVER['TRUSTED_PROXIES'] = '1.1.1.1,2.2.2.2';
+        $_SERVER['TRUSTED_HOSTS'] = '1.1.1.1,2.2.2.2,example.com';
 
         ContaoKernel::fromRequest($this->getTempDir(), Request::create('/'));
 
-        $this->assertSame(['{1.1.1.1}i', '{2.2.2.2}i'], Request::getTrustedHosts());
+        $this->assertSame(['{1.1.1.1}i', '{2.2.2.2}i', '{example.com}i'], Request::getTrustedHosts());
+        $this->assertSame(Request::HEADER_X_FORWARDED_FOR | Request::HEADER_X_FORWARDED_PORT | Request::HEADER_X_FORWARDED_PROTO | Request::HEADER_X_FORWARDED_HOST, Request::getTrustedHeaderSet());
+
+        unset($_SERVER['TRUSTED_HOSTS']);
     }
 
-    public function testEnablesRequestHttpMethodParameterOverride(): void
+    public function testDoesNotEnableRequestHttpMethodParameterOverride(): void
     {
         $this->assertFalse(Request::getHttpMethodParameterOverride());
 
         ContaoKernel::fromRequest($this->getTempDir(), Request::create('/'));
 
-        $this->assertTrue(Request::getHttpMethodParameterOverride());
+        $this->assertFalse(Request::getHttpMethodParameterOverride());
     }
 
     public function testSetsProjectDirFromInput(): void
@@ -321,10 +364,8 @@ class ContaoKernelTest extends ContaoTestCase
         $this->assertFalse($kernel->isDebug());
     }
 
-    /**
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
-     */
+    #[PreserveGlobalState(false)]
+    #[RunInSeparateProcess]
     public function testCreatesDevKernelFromConsoleArgument(): void
     {
         $input = new ArgvInput(['help', '--env=dev']);
@@ -343,10 +384,8 @@ class ContaoKernelTest extends ContaoTestCase
         ContaoKernel::fromInput($this->getTempDir(), $input);
     }
 
-    /**
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
-     */
+    #[PreserveGlobalState(false)]
+    #[RunInSeparateProcess]
     public function testReturnsTheContaoKernelInDevMode(): void
     {
         $_SERVER['APP_ENV'] = 'dev';
@@ -357,13 +396,11 @@ class ContaoKernelTest extends ContaoTestCase
         $this->assertInstanceOf(ContaoKernel::class, $kernel);
     }
 
-    /**
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
-     */
+    #[PreserveGlobalState(false)]
+    #[RunInSeparateProcess]
     public function testReturnsTheContaoCacheInProdMode(): void
     {
-        unset($_SERVER['APP_ENV']);
+        unset($_SERVER['APP_ENV'], $_ENV['APP_ENV'], $_ENV['DISABLE_HTTP_CACHE'], $_SERVER['DISABLE_HTTP_CACHE']);
 
         $tempDir = realpath($this->getTempDir());
         $kernel = ContaoKernel::fromRequest($tempDir, Request::create('/'));
@@ -371,10 +408,8 @@ class ContaoKernelTest extends ContaoTestCase
         $this->assertInstanceOf(ContaoCache::class, $kernel);
     }
 
-    /**
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
-     */
+    #[PreserveGlobalState(false)]
+    #[RunInSeparateProcess]
     public function testCreatesDevKernelFromAppEnvVar(): void
     {
         $_SERVER['APP_ENV'] = 'dev';
@@ -386,10 +421,8 @@ class ContaoKernelTest extends ContaoTestCase
         $this->assertTrue($kernel->isDebug());
     }
 
-    /**
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
-     */
+    #[PreserveGlobalState(false)]
+    #[RunInSeparateProcess]
     public function testCreatesProdKernelFromAppEnvVar(): void
     {
         $_SERVER['APP_ENV'] = 'prod';
@@ -403,8 +436,6 @@ class ContaoKernelTest extends ContaoTestCase
 
     /**
      * Returns a kernel with a plugin loader mock.
-     *
-     * @return ContaoKernel&MockObject
      */
     private function getKernel(string $projectDir, string $env = 'prod'): ContaoKernel
     {
@@ -422,10 +453,7 @@ class ContaoKernelTest extends ContaoTestCase
         return $kernel;
     }
 
-    /**
-     * @return ConfigPluginInterface&MockObject
-     */
-    private function mockConfigPlugin(LoaderInterface $loader): ConfigPluginInterface
+    private function mockConfigPlugin(LoaderInterface $loader): ConfigPluginInterface&MockObject
     {
         $plugin = $this->createMock(ConfigPluginInterface::class);
         $plugin

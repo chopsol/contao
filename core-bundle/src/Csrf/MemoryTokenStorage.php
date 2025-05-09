@@ -18,22 +18,16 @@ use Symfony\Contracts\Service\ResetInterface;
 
 class MemoryTokenStorage implements TokenStorageInterface, ResetInterface
 {
-    /**
-     * @var array|null
-     */
-    private $tokens;
+    private array|null $tokens = null;
 
-    /**
-     * @var array
-     */
-    private $usedTokens = [];
+    private array $usedTokens = [];
 
-    public function getToken($tokenId): string
+    public function getToken(string $tokenId): string
     {
         $this->assertInitialized();
 
         if (empty($this->tokens[$tokenId])) {
-            throw new TokenNotFoundException(sprintf('The CSRF token ID "%s" does not exist.', $tokenId));
+            throw new TokenNotFoundException(\sprintf('The CSRF token ID "%s" does not exist.', $tokenId));
         }
 
         $this->usedTokens[$tokenId] = true;
@@ -41,7 +35,7 @@ class MemoryTokenStorage implements TokenStorageInterface, ResetInterface
         return $this->tokens[$tokenId];
     }
 
-    public function setToken($tokenId, $token): void
+    public function setToken(string $tokenId, #[\SensitiveParameter] string $token): void
     {
         $this->assertInitialized();
 
@@ -49,14 +43,14 @@ class MemoryTokenStorage implements TokenStorageInterface, ResetInterface
         $this->tokens[$tokenId] = $token;
     }
 
-    public function hasToken($tokenId): bool
+    public function hasToken(string $tokenId): bool
     {
         $this->assertInitialized();
 
         return !empty($this->tokens[$tokenId]);
     }
 
-    public function removeToken($tokenId): ?string
+    public function removeToken(string $tokenId): string|null
     {
         $this->assertInitialized();
 
@@ -72,14 +66,11 @@ class MemoryTokenStorage implements TokenStorageInterface, ResetInterface
         return $token;
     }
 
-    public function initialize(array $tokens): void
+    public function initialize(#[\SensitiveParameter] array $tokens): void
     {
         $this->tokens = $tokens;
     }
 
-    /**
-     * @return array<mixed>
-     */
     public function getUsedTokens(): array
     {
         if (null === $this->tokens) {
@@ -95,9 +86,6 @@ class MemoryTokenStorage implements TokenStorageInterface, ResetInterface
         $this->usedTokens = [];
     }
 
-    /**
-     * @throws \LogicException
-     */
     private function assertInitialized(): void
     {
         if (null === $this->tokens) {

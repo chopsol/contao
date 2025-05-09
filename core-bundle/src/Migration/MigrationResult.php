@@ -14,20 +14,10 @@ namespace Contao\CoreBundle\Migration;
 
 final class MigrationResult
 {
-    /**
-     * @var bool
-     */
-    private $successful;
-
-    /**
-     * @var string
-     */
-    private $message;
-
-    public function __construct(bool $successful, string $message)
-    {
-        $this->successful = $successful;
-        $this->message = $message;
+    public function __construct(
+        private readonly bool $successful,
+        private readonly string $message,
+    ) {
     }
 
     public function isSuccessful(): bool

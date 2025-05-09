@@ -12,57 +12,39 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\Functional;
 
-use Contao\Config;
 use Contao\System;
 use Contao\TestCase\FunctionalTestCase;
-use Symfony\Component\HttpFoundation\Response;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class RoutingTest extends FunctionalTestCase
 {
-    /**
-     * @var array
-     */
-    private static $lastImport;
-
-    public static function setUpBeforeClass(): void
-    {
-        parent::setUpBeforeClass();
-
-        static::bootKernel();
-        static::resetDatabaseSchema();
-        static::ensureKernelShutdown();
-    }
+    private static array|null $lastImport = null;
 
     protected function setUp(): void
     {
         parent::setUp();
 
         $_GET = [];
+        unset($GLOBALS['objPage']);
 
-        Config::set('debugMode', false);
-        Config::set('useAutoItem', true);
-        Config::set('addLanguageToUrl', false);
+        $GLOBALS['TL_CONFIG']['addLanguageToUrl'] = false;
     }
 
-    /**
-     * @dataProvider getAliases
-     */
-    public function testResolvesAliases(array $fixtures, string $request, int $statusCode, string $pageTitle, array $query, string $host, bool $autoItem): void
+    #[DataProvider('getAliases')]
+    public function testResolvesAliases(array $fixtures, string $request, int $statusCode, string $pageTitle, array $query, string $host): void
     {
-        Config::set('useAutoItem', $autoItem);
-
         $_SERVER['REQUEST_URI'] = $request;
         $_SERVER['HTTP_HOST'] = $host;
+        $_SERVER['HTTP_ACCEPT_LANGUAGE'] = 'en';
+        $_SERVER['HTTP_ACCEPT'] = 'text/html';
 
         $client = $this->createClient([], $_SERVER);
         System::setContainer($client->getContainer());
 
         $this->loadFixtureFiles($fixtures);
 
-        $crawler = $client->request('GET', "http://$host$request");
+        $crawler = $client->request('GET', "https://$host$request");
         $title = trim($crawler->filterXPath('//head/title')->text());
-
-        /** @var Response $response */
         $response = $client->getResponse();
 
         $this->assertSame($statusCode, $response->getStatusCode());
@@ -70,36 +52,7 @@ class RoutingTest extends FunctionalTestCase
         $this->assertStringContainsString($pageTitle, $title);
     }
 
-    /**
-     * @group legacy
-     * @dataProvider getAliases
-     *
-     * @expectedDeprecation Since contao/core-bundle 4.10: Using the "Contao\CoreBundle\Routing\FrontendLoader" class has been deprecated %s.
-     */
-    public function testResolvesAliasesInLegacyMode(array $fixtures, string $request, int $statusCode, string $pageTitle, array $query, string $host, bool $autoItem): void
-    {
-        Config::set('useAutoItem', $autoItem);
-
-        $_SERVER['REQUEST_URI'] = $request;
-        $_SERVER['HTTP_HOST'] = $host;
-
-        $client = $this->createClient(['environment' => 'legacy'], $_SERVER);
-        System::setContainer($client->getContainer());
-
-        $this->loadFixtureFiles($fixtures);
-
-        $crawler = $client->request('GET', "http://$host$request");
-        $title = trim($crawler->filterXPath('//head/title')->text());
-
-        /** @var Response $response */
-        $response = $client->getResponse();
-
-        $this->assertSame($statusCode, $response->getStatusCode());
-        $this->assertSame($query, $_GET);
-        $this->assertStringContainsString($pageTitle, $title);
-    }
-
-    public function getAliases(): \Generator
+    public static function getAliases(): iterable
     {
         yield 'Renders the page if the alias is "index" and the request is empty' => [
             ['theme', 'root-with-index'],
@@ -108,17 +61,15 @@ class RoutingTest extends FunctionalTestCase
             'Index - Root with index page',
             [],
             'root-with-index.local',
-            false,
         ];
 
         yield 'Redirects to the first regular page if the alias is not "index" and the request is empty' => [
             ['theme', 'root-with-home'],
             '/',
-            303,
-            'Redirecting to http://root-with-home.local/home.html',
+            302,
+            'Redirecting to https://root-with-home.local/home.html',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the page if the alias matches' => [
@@ -128,117 +79,96 @@ class RoutingTest extends FunctionalTestCase
             'Home - Root with home page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the request string is a double-slash' => [
             ['theme', 'root-with-home'],
             '//',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if there is an item with an empty key' => [
             ['theme', 'root-with-home'],
             '/home//.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the URL suffix does not match' => [
             ['theme', 'root-with-home'],
             '/home.xml',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the URL contains the "auto_item" keyword' => [
             ['theme', 'root-with-home'],
             '/home/auto_item/foo.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains duplicate keys' => [
             ['theme', 'root-with-home'],
             '/home/foo/bar1/foo/bar2.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             ['foo' => 'bar1'],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains an unused argument' => [
             ['theme', 'root-with-home'],
             '/home/foo/bar.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             ['foo' => 'bar'],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains an unused argument without value' => [
             ['theme', 'root-with-home'],
             '/home/foo.html',
             404,
-            '(404 Not Found)',
-            [],
+            'Error 404 Page',
+            ['auto_item' => 'foo'],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains an unused argument with an empty value' => [
             ['theme', 'root-with-home'],
             '/home/foo/.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             ['foo' => ''],
             'root-with-home.local',
-            false,
-        ];
-
-        yield 'Renders the page if an existing item is requested' => [
-            ['theme', 'root-with-home', 'news'],
-            '/home/items/foobar.html',
-            200,
-            'Foobar - Root with home page',
-            ['items' => 'foobar'],
-            'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains an item with an empty key' => [
             ['theme', 'root-with-home'],
             '/home//foo.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the alias is empty' => [
             ['theme', 'root-with-home'],
             '/.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Urldecodes the alias' => [
@@ -248,47 +178,24 @@ class RoutingTest extends FunctionalTestCase
             'Höme - Root with special chars',
             [],
             'root-with-special-chars.local',
-            false,
         ];
 
-        yield 'Renders the page if auto items are enabled and an existing item is requested' => [
+        yield 'Renders the page if an existing auto item is requested' => [
             ['theme', 'root-with-home', 'news'],
             '/home/foobar.html',
             200,
             'Foobar - Root with home page',
-            ['auto_item' => 'foobar', 'items' => 'foobar'],
+            ['auto_item' => 'foobar'],
             'root-with-home.local',
-            true,
-        ];
-
-        yield 'Renders the 404 page if auto items are enabled and the URL contains the "auto_item" keyword' => [
-            ['theme', 'root-with-home', 'news'],
-            '/home/auto_item/foo.html',
-            404,
-            '(404 Not Found)',
-            [],
-            'root-with-home.local',
-            true,
-        ];
-
-        yield 'Renders the 404 page if auto items are enabled and the URL contains an auto item keyword' => [
-            ['theme', 'root-with-home', 'news'],
-            '/home/items/foobar.html',
-            404,
-            '(404 Not Found)',
-            [],
-            'root-with-home.local',
-            true,
         ];
 
         yield 'Redirects to the first regular page if the folder URL alias is not "index" and the request is empty' => [
             ['theme', 'root-with-folder-urls'],
             '/',
-            303,
-            'Redirecting to http://root-with-folder-urls.local/folder/url/home.html',
+            302,
+            'Redirecting to https://root-with-folder-urls.local/folder/url/home.html',
             [],
             'root-with-folder-urls.local',
-            false,
         ];
 
         yield 'Renders the page if the folder URL alias matches' => [
@@ -298,47 +205,24 @@ class RoutingTest extends FunctionalTestCase
             'Home - Root with folder URLs',
             [],
             'root-with-folder-urls.local',
-            false,
         ];
 
-        yield 'Renders the folder URL page if an existing item is requested' => [
-            ['theme', 'root-with-folder-urls', 'news'],
-            '/folder/url/home/items/foobar.html',
-            200,
-            'Foobar - Root with folder URLs',
-            ['items' => 'foobar'],
-            'root-with-folder-urls.local',
-            false,
-        ];
-
-        yield 'Renders the folder URL page if auto items are enabled an existing item is requested' => [
+        yield 'Renders the folder URL page if an existing auto item is requested' => [
             ['theme', 'root-with-folder-urls', 'news'],
             '/folder/url/home/foobar.html',
             200,
             'Foobar - Root with folder URLs',
-            ['auto_item' => 'foobar', 'items' => 'foobar'],
+            ['auto_item' => 'foobar'],
             'root-with-folder-urls.local',
-            true,
         ];
 
-        yield 'Renders the 404 page if auto items are enabled and the folder URL contains the "auto_item" keyword' => [
+        yield 'Renders the 404 exception if the folder URL contains the "auto_item" keyword' => [
             ['theme', 'root-with-folder-urls', 'news'],
             '/folder/url/home/auto_item/foo.html',
             404,
-            '(404 Not Found)',
+            'Not Found',
             [],
             'root-with-folder-urls.local',
-            true,
-        ];
-
-        yield 'Renders the 404 page if auto items are enabled and the folder URL contains an auto item keyword' => [
-            ['theme', 'root-with-folder-urls', 'news'],
-            '/folder/url/home/items/foobar.html',
-            404,
-            '(404 Not Found)',
-            [],
-            'root-with-folder-urls.local',
-            true,
         ];
 
         yield 'Renders the page if the URL contains a page ID and the page has no alias' => [
@@ -348,45 +232,39 @@ class RoutingTest extends FunctionalTestCase
             'Home - Page without alias',
             [],
             'localhost',
-            true,
         ];
 
         yield 'Renders the 404 page if the URL contains a page ID but the page has an alias' => [
             ['theme', 'root-with-home'],
             '/2.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            true,
         ];
     }
 
-    /**
-     * @dataProvider getAliasesWithLocale
-     */
-    public function testResolvesAliasesWithLocale(array $fixtures, string $request, int $statusCode, string $pageTitle, array $query, string $host, bool $autoItem): void
+    #[DataProvider('getAliasesWithLocale')]
+    public function testResolvesAliasesWithLocale(array $fixtures, string $request, int $statusCode, string $pageTitle, array $query, string $host): void
     {
-        Config::set('useAutoItem', $autoItem);
-
         $_SERVER['REQUEST_URI'] = $request;
         $_SERVER['HTTP_HOST'] = $host;
+        $_SERVER['HTTP_ACCEPT_LANGUAGE'] = 'en';
+        $_SERVER['HTTP_ACCEPT'] = 'text/html';
 
         $client = $this->createClient([], $_SERVER);
         System::setContainer($client->getContainer());
 
         $this->loadFixtureFiles($fixtures);
 
-        self::$container
+        self::getContainer()
             ->get('doctrine')
             ->getConnection()
-            ->exec('UPDATE tl_page SET urlPrefix=language')
+            ->executeStatement('UPDATE tl_page SET urlPrefix = language')
         ;
 
-        $crawler = $client->request('GET', "http://$host$request");
+        $crawler = $client->request('GET', "https://$host$request");
         $title = trim($crawler->filterXPath('//head/title')->text());
-
-        /** @var Response $response */
         $response = $client->getResponse();
 
         $this->assertSame($statusCode, $response->getStatusCode());
@@ -394,50 +272,15 @@ class RoutingTest extends FunctionalTestCase
         $this->assertStringContainsString($pageTitle, $title);
     }
 
-    /**
-     * @group legacy
-     * @dataProvider getAliasesWithLocale
-     *
-     * @expectedDeprecation Since contao/core-bundle 4.10: Using the "Contao\CoreBundle\Routing\FrontendLoader" class has been deprecated %s.
-     */
-    public function testResolvesAliasesWithLocaleInLegacyMode(array $fixtures, string $request, int $statusCode, string $pageTitle, array $query, string $host, bool $autoItem): void
-    {
-        Config::set('useAutoItem', $autoItem);
-        Config::set('addLanguageToUrl', true);
-
-        $_SERVER['REQUEST_URI'] = $request;
-        $_SERVER['HTTP_HOST'] = $host;
-
-        $client = $this->createClient(['environment' => 'locale'], $_SERVER);
-        System::setContainer($client->getContainer());
-
-        $this->loadFixtureFiles($fixtures);
-
-        $crawler = $client->request('GET', "http://$host$request");
-        $title = trim($crawler->filterXPath('//head/title')->text());
-
-        /** @var Response $response */
-        $response = $client->getResponse();
-
-        if (!isset($query['language'])) {
-            unset($_GET['language']);
-        }
-
-        $this->assertSame($statusCode, $response->getStatusCode());
-        $this->assertSame($query, $_GET);
-        $this->assertStringContainsString($pageTitle, $title);
-    }
-
-    public function getAliasesWithLocale(): \Generator
+    public static function getAliasesWithLocale(): iterable
     {
         yield 'Redirects to the language root if the request is empty' => [
             ['theme', 'root-with-index'],
             '/',
             302,
-            'Redirecting to http://root-with-index.local/en/',
+            'Redirecting to https://root-with-index.local/en/',
             ['language' => 'en'],
             'root-with-index.local',
-            false,
         ];
 
         yield 'Renders the page if the alias is "index" and the request contains the language only' => [
@@ -447,7 +290,6 @@ class RoutingTest extends FunctionalTestCase
             'Index - Root with index page',
             ['language' => 'en'],
             'root-with-index.local',
-            false,
         ];
 
         yield 'Renders the page if the alias matches' => [
@@ -457,97 +299,87 @@ class RoutingTest extends FunctionalTestCase
             'Home - Root with home page',
             ['language' => 'en'],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Redirects if the alias matches but no language is given' => [
             ['theme', 'root-with-home'],
             '/home.html',
             302,
-            'Redirecting to http://root-with-home.local/en/home.html',
+            'Redirecting to https://root-with-home.local/en/home.html',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the URL suffix does not match' => [
             ['theme', 'root-with-home'],
             '/en/home.xml',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path ends with a double-slash' => [
             ['theme', 'root-with-home'],
             '/en//',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the URL contains the "auto_item" keyword' => [
             ['theme', 'root-with-home'],
             '/en/home/auto_item/foo.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains duplicate keys' => [
             ['theme', 'root-with-home'],
             '/en/home/foo/bar1/foo/bar2.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             ['language' => 'en', 'foo' => 'bar1'],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains an unused argument' => [
             ['theme', 'root-with-home'],
             '/en/home/foo/bar.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             ['language' => 'en', 'foo' => 'bar'],
             'root-with-home.local',
-            false,
-        ];
-
-        yield 'Renders the page if an existing item is requested' => [
-            ['theme', 'root-with-home', 'news'],
-            '/en/home/items/foobar.html',
-            200,
-            'Foobar - Root with home page',
-            ['language' => 'en', 'items' => 'foobar'],
-            'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains item with an empty key' => [
             ['theme', 'root-with-home', 'news'],
             '/en/home//foo.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             ['language' => 'en'],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the alias is empty' => [
             ['theme', 'root-with-home'],
             '/en/.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
+        ];
+
+        yield 'Renders the 404 page for an unknown language' => [
+            ['theme', 'root-with-home'],
+            '/fr/home.html',
+            404,
+            'Error 404 Page',
+            [],
+            'root-with-home.local',
         ];
 
         yield 'Urldecodes the alias' => [
@@ -557,57 +389,33 @@ class RoutingTest extends FunctionalTestCase
             'Höme - Root with special chars',
             ['language' => 'en'],
             'root-with-special-chars.local',
-            false,
         ];
 
-        yield 'Renders the page if auto items are enabled and an existing item is requested' => [
+        yield 'Renders the page if an existing auto item is requested' => [
             ['theme', 'root-with-home', 'news'],
             '/en/home/foobar.html',
             200,
             'Foobar - Root with home page',
-            ['language' => 'en', 'auto_item' => 'foobar', 'items' => 'foobar'],
+            ['language' => 'en', 'auto_item' => 'foobar'],
             'root-with-home.local',
-            true,
         ];
 
-        yield 'Renders the 404 page if auto items are enabled and there is item with an empty key' => [
+        yield 'Renders the 404 page if there is an item with an empty key' => [
             ['theme', 'root-with-home', 'news'],
             '/en/home/foobar//foo.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             ['language' => 'en', 'auto_item' => 'foobar'],
             'root-with-home.local',
-            true,
         ];
 
         yield 'Renders the page if there is an item with an empty value and another item with an empty key' => [
             ['theme', 'root-with-home', 'news'],
             '/en/home/foobar///foo.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             ['language' => 'en', 'foobar' => ''],
             'root-with-home.local',
-            true,
-        ];
-
-        yield 'Renders the 404 page if auto items are enabled and the URL contains the "auto_item" keyword' => [
-            ['theme', 'root-with-home', 'news'],
-            '/en/home/auto_item/foo.html',
-            404,
-            '(404 Not Found)',
-            [],
-            'root-with-home.local',
-            true,
-        ];
-
-        yield 'Renders the 404 page if auto items are enabled and the URL contains an auto item keyword' => [
-            ['theme', 'root-with-home', 'news'],
-            '/en/home/items/foobar.html',
-            404,
-            '(404 Not Found)',
-            ['language' => 'en'],
-            'root-with-home.local',
-            true,
         ];
 
         yield 'Renders the page if the folder URL alias matches' => [
@@ -617,47 +425,24 @@ class RoutingTest extends FunctionalTestCase
             'Home - Root with folder URLs',
             ['language' => 'en'],
             'root-with-folder-urls.local',
-            false,
         ];
 
-        yield 'Renders the folder URL page if an existing item is requested' => [
-            ['theme', 'root-with-folder-urls', 'news'],
-            '/en/folder/url/home/items/foobar.html',
-            200,
-            'Foobar - Root with folder URLs',
-            ['language' => 'en', 'items' => 'foobar'],
-            'root-with-folder-urls.local',
-            false,
-        ];
-
-        yield 'Renders the folder URL page if auto items are enabled an existing item is requested' => [
+        yield 'Renders the folder URL page if an existing auto item is requested' => [
             ['theme', 'root-with-folder-urls', 'news'],
             '/en/folder/url/home/foobar.html',
             200,
             'Foobar - Root with folder URLs',
-            ['language' => 'en', 'auto_item' => 'foobar', 'items' => 'foobar'],
+            ['language' => 'en', 'auto_item' => 'foobar'],
             'root-with-folder-urls.local',
-            true,
         ];
 
-        yield 'Renders the 404 page if auto items are enabled and the folder URL contains the "auto_item" keyword' => [
+        yield 'Renders the 404 exception if the folder URL contains the "auto_item" keyword' => [
             ['theme', 'root-with-folder-urls', 'news'],
             '/en/folder/url/home/auto_item/foo.html',
             404,
-            '(404 Not Found)',
+            'Not Found',
             [],
             'root-with-folder-urls.local',
-            true,
-        ];
-
-        yield 'Renders the 404 page if auto items are enabled and the folder URL contains an auto item keyword' => [
-            ['theme', 'root-with-folder-urls', 'news'],
-            '/en/folder/url/home/items/foobar.html',
-            404,
-            '(404 Not Found)',
-            ['language' => 'en'],
-            'root-with-folder-urls.local',
-            true,
         ];
 
         yield 'Renders the page if the URL contains a page ID and the page has no alias' => [
@@ -667,55 +452,48 @@ class RoutingTest extends FunctionalTestCase
             'Home - Page without alias',
             ['language' => 'en'],
             'localhost',
-            true,
         ];
 
         yield 'Renders the 404 page if the URL contains a page ID but the page has an alias' => [
             ['theme', 'root-with-home'],
             '/en/2.html',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            true,
         ];
 
         yield 'Redirects to the first regular page if the alias is not "index" and the request is only the prefix' => [
             ['theme', 'root-with-home-and-prefix'],
             '/en/',
-            303,
-            'Redirecting to http://root-with-home.local/en/home.html',
+            302,
+            'Redirecting to https://root-with-home.local/en/home.html',
             ['language' => 'en'],
             'root-with-home.local',
-            false,
         ];
     }
 
-    /**
-     * @dataProvider getAliasesWithoutUrlSuffix
-     */
-    public function testResolvesAliasesWithoutUrlSuffix(array $fixtures, string $request, int $statusCode, string $pageTitle, array $query, string $host, bool $autoItem): void
+    #[DataProvider('getAliasesWithoutUrlSuffix')]
+    public function testResolvesAliasesWithoutUrlSuffix(array $fixtures, string $request, int $statusCode, string $pageTitle, array $query, string $host): void
     {
-        Config::set('useAutoItem', $autoItem);
-
         $_SERVER['REQUEST_URI'] = $request;
         $_SERVER['HTTP_HOST'] = $host;
+        $_SERVER['HTTP_ACCEPT_LANGUAGE'] = 'en';
+        $_SERVER['HTTP_ACCEPT'] = 'text/html';
 
         $client = $this->createClient([], $_SERVER);
         System::setContainer($client->getContainer());
 
         $this->loadFixtureFiles($fixtures);
 
-        self::$container
+        self::getContainer()
             ->get('doctrine')
             ->getConnection()
-            ->exec("UPDATE tl_page SET urlSuffix=''")
+            ->executeStatement("UPDATE tl_page SET urlSuffix = ''")
         ;
 
-        $crawler = $client->request('GET', "http://$host$request");
+        $crawler = $client->request('GET', "https://$host$request");
         $title = trim($crawler->filterXPath('//head/title')->text());
-
-        /** @var Response $response */
         $response = $client->getResponse();
 
         $this->assertSame($statusCode, $response->getStatusCode());
@@ -723,36 +501,7 @@ class RoutingTest extends FunctionalTestCase
         $this->assertStringContainsString($pageTitle, $title);
     }
 
-    /**
-     * @group legacy
-     * @dataProvider getAliasesWithoutUrlSuffix
-     *
-     * @expectedDeprecation Since contao/core-bundle 4.10: Using the "Contao\CoreBundle\Routing\FrontendLoader" class has been deprecated %s.
-     */
-    public function testResolvesAliasesWithoutUrlSuffixInLegacyMode(array $fixtures, string $request, int $statusCode, string $pageTitle, array $query, string $host, bool $autoItem): void
-    {
-        Config::set('useAutoItem', $autoItem);
-
-        $_SERVER['REQUEST_URI'] = $request;
-        $_SERVER['HTTP_HOST'] = $host;
-
-        $client = $this->createClient(['environment' => 'suffix'], $_SERVER);
-        System::setContainer($client->getContainer());
-
-        $this->loadFixtureFiles($fixtures);
-
-        $crawler = $client->request('GET', "http://$host$request");
-        $title = trim($crawler->filterXPath('//head/title')->text());
-
-        /** @var Response $response */
-        $response = $client->getResponse();
-
-        $this->assertSame($statusCode, $response->getStatusCode());
-        $this->assertSame($query, $_GET);
-        $this->assertStringContainsString($pageTitle, $title);
-    }
-
-    public function getAliasesWithoutUrlSuffix(): \Generator
+    public static function getAliasesWithoutUrlSuffix(): iterable
     {
         yield 'Renders the page if the alias is "index" and the request is empty' => [
             ['theme', 'root-with-index'],
@@ -761,17 +510,15 @@ class RoutingTest extends FunctionalTestCase
             'Index - Root with index page',
             [],
             'root-with-index.local',
-            false,
         ];
 
         yield 'Redirects to the first regular page if the alias is not "index" and the request is empty' => [
             ['theme', 'root-with-home'],
             '/',
-            303,
-            'Redirecting to http://root-with-home.local/home',
+            302,
+            'Redirecting to https://root-with-home.local/home',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the page if the alias matches' => [
@@ -781,67 +528,51 @@ class RoutingTest extends FunctionalTestCase
             'Home - Root with home page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the URL suffix does not match' => [
             ['theme', 'root-with-home'],
             '/home.xml',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the URL contains the "auto_item" keyword' => [
             ['theme', 'root-with-home'],
             '/home/auto_item/foo',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains duplicate keys' => [
             ['theme', 'root-with-home'],
             '/home/foo/bar1/foo/bar2',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             ['foo' => 'bar1'],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains an unused argument' => [
             ['theme', 'root-with-home', 'news'],
             '/home/foo/bar',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             ['foo' => 'bar'],
             'root-with-home.local',
-            false,
-        ];
-
-        yield 'Renders the page if an existing item is requested' => [
-            ['theme', 'root-with-home', 'news'],
-            '/home/items/foobar',
-            200,
-            'Foobar - Root with home page',
-            ['items' => 'foobar'],
-            'root-with-home.local',
-            false,
         ];
 
         yield 'Renders the 404 page if the path contains an item with item with an empty key' => [
             ['theme', 'root-with-home', 'news'],
             '/home//foo',
             404,
-            '(404 Not Found)',
+            'Error 404 Page',
             [],
             'root-with-home.local',
-            false,
         ];
 
         yield 'Urldecodes the alias' => [
@@ -851,47 +582,24 @@ class RoutingTest extends FunctionalTestCase
             'Höme - Root with special chars',
             [],
             'root-with-special-chars.local',
-            false,
         ];
 
-        yield 'Renders the page if auto items are enabled an existing item is requested' => [
+        yield 'Renders the page if an existing auto item is requested' => [
             ['theme', 'root-with-home', 'news'],
             '/home/foobar',
             200,
             'Foobar - Root with home page',
-            ['auto_item' => 'foobar', 'items' => 'foobar'],
+            ['auto_item' => 'foobar'],
             'root-with-home.local',
-            true,
-        ];
-
-        yield 'Renders the 404 page if auto items are enabled and the URL contains the "auto_item" keyword' => [
-            ['theme', 'root-with-home', 'news'],
-            '/home/auto_item/foo',
-            404,
-            '(404 Not Found)',
-            [],
-            'root-with-home.local',
-            true,
-        ];
-
-        yield 'Renders the 404 page if auto items are enabled and the URL contains an auto item keyword' => [
-            ['theme', 'root-with-home', 'news'],
-            '/home/items/foobar',
-            404,
-            '(404 Not Found)',
-            [],
-            'root-with-home.local',
-            true,
         ];
 
         yield 'Redirects to the first regular page if the folder URL alias is not "index" and the request is empty' => [
             ['theme', 'root-with-folder-urls'],
             '/',
-            303,
-            'Redirecting to http://root-with-folder-urls.local/folder/url/home',
+            302,
+            'Redirecting to https://root-with-folder-urls.local/folder/url/home',
             [],
             'root-with-folder-urls.local',
-            false,
         ];
 
         yield 'Renders the page if the folder URL alias matches' => [
@@ -901,75 +609,49 @@ class RoutingTest extends FunctionalTestCase
             'Home - Root with folder URLs',
             [],
             'root-with-folder-urls.local',
-            false,
         ];
 
-        yield 'Renders the folder URL page if an existing item is requested' => [
-            ['theme', 'root-with-folder-urls', 'news'],
-            '/folder/url/home/items/foobar',
-            200,
-            'Foobar - Root with folder URLs',
-            ['items' => 'foobar'],
-            'root-with-folder-urls.local',
-            false,
-        ];
-
-        yield 'Renders the folder URL page if auto items are enabled an existing item is requested' => [
+        yield 'Renders the folder URL page if an existing auto item is requested' => [
             ['theme', 'root-with-folder-urls', 'news'],
             '/folder/url/home/foobar',
             200,
             'Foobar - Root with folder URLs',
-            ['auto_item' => 'foobar', 'items' => 'foobar'],
+            ['auto_item' => 'foobar'],
             'root-with-folder-urls.local',
-            true,
         ];
 
-        yield 'Renders the 404 page if auto items are enabled and the folder URL contains the "auto_item" keyword' => [
+        yield 'Renders the 404 exception if the folder URL contains the "auto_item" keyword' => [
             ['theme', 'root-with-folder-urls', 'news'],
             '/folder/url/home/auto_item/foo',
             404,
-            '(404 Not Found)',
+            'Not Found',
             [],
             'root-with-folder-urls.local',
-            true,
-        ];
-
-        yield 'Renders the 404 page if auto items are enabled and the folder URL contains an auto item keyword' => [
-            ['theme', 'root-with-folder-urls', 'news'],
-            '/folder/url/home/items/foobar',
-            404,
-            '(404 Not Found)',
-            [],
-            'root-with-folder-urls.local',
-            true,
         ];
     }
 
-    /**
-     * @dataProvider getRootAliases
-     */
+    #[DataProvider('getRootAliases')]
     public function testResolvesTheRootPage(array $fixtures, string $request, int $statusCode, string $pageTitle, string $acceptLanguages, string $host): void
     {
         $_SERVER['REQUEST_URI'] = $request;
         $_SERVER['HTTP_HOST'] = $host;
         $_SERVER['HTTP_ACCEPT_LANGUAGE'] = $acceptLanguages;
+        $_SERVER['HTTP_ACCEPT'] = 'text/html';
 
         $client = $this->createClient([], $_SERVER);
         System::setContainer($client->getContainer());
 
         $this->loadFixtureFiles($fixtures);
 
-        $crawler = $client->request('GET', "http://$host$request");
+        $crawler = $client->request('GET', "https://$host$request");
         $title = trim($crawler->filterXPath('//head/title')->text());
-
-        /** @var Response $response */
         $response = $client->getResponse();
 
         $this->assertSame($statusCode, $response->getStatusCode());
         $this->assertStringContainsString($pageTitle, $title);
     }
 
-    public function getRootAliases(): \Generator
+    public static function getRootAliases(): iterable
     {
         yield 'Renders the root page if one of the accept languages matches' => [
             ['theme', 'root-with-index'],
@@ -999,28 +681,19 @@ class RoutingTest extends FunctionalTestCase
         ];
 
         yield 'Matches a hostname with port' => [
-            ['theme', 'domain-with-port'],
+            ['theme', 'localhost'],
             '/',
             200,
-            'Home - Domain with port',
+            'Home - Localhost',
             'en',
-            'domain-with-port.local:8080',
-        ];
-
-        yield 'Renders the 404 page if no language matches' => [
-            ['theme', 'root-without-fallback-language'],
-            '/',
-            404,
-            '(404 Not Found)',
-            'de,fr',
-            'root-without-fallback-language.local',
+            '127.0.0.1:8080',
         ];
 
         yield 'Redirects to the first language root if the accept languages matches' => [
             ['theme', 'same-domain-root'],
             '/',
-            303,
-            'Redirecting to http://same-domain-root.local/english-site.html',
+            302,
+            'Redirecting to https://same-domain-root.local/english-site.html',
             'en',
             'same-domain-root.local',
         ];
@@ -1028,8 +701,8 @@ class RoutingTest extends FunctionalTestCase
         yield 'Redirects to the second language root if the accept languages matches' => [
             ['theme', 'same-domain-root'],
             '/',
-            303,
-            'Redirecting to http://same-domain-root.local/german-site.html',
+            302,
+            'Redirecting to https://same-domain-root.local/german-site.html',
             'de',
             'same-domain-root.local',
         ];
@@ -1037,79 +710,47 @@ class RoutingTest extends FunctionalTestCase
         yield 'Redirects to the fallback root if none of the accept languages matches' => [
             ['theme', 'same-domain-root'],
             '/',
-            303,
-            'Redirecting to http://same-domain-root.local/english-site.html',
+            302,
+            'Redirecting to https://same-domain-root.local/english-site.html',
             'fr',
             'same-domain-root.local',
         ];
     }
 
-    /**
-     * @dataProvider getRootAliasesWithLocale
-     */
+    #[DataProvider('getRootAliasesWithLocale')]
     public function testResolvesTheRootPageWithLocale(array $fixtures, string $request, int $statusCode, string $pageTitle, string $acceptLanguages, string $host): void
     {
         $_SERVER['REQUEST_URI'] = $request;
         $_SERVER['HTTP_HOST'] = $host;
         $_SERVER['HTTP_ACCEPT_LANGUAGE'] = $acceptLanguages;
+        $_SERVER['HTTP_ACCEPT'] = 'text/html';
 
         $client = $this->createClient([], $_SERVER);
         System::setContainer($client->getContainer());
 
         $this->loadFixtureFiles($fixtures);
 
-        self::$container
+        self::getContainer()
             ->get('doctrine')
             ->getConnection()
-            ->exec('UPDATE tl_page SET urlPrefix=language')
+            ->executeStatement("UPDATE tl_page SET urlPrefix = language WHERE urlPrefix = ''")
         ;
 
-        $crawler = $client->request('GET', "http://$host$request");
+        $crawler = $client->request('GET', "https://$host$request");
         $title = trim($crawler->filterXPath('//head/title')->text());
-
-        /** @var Response $response */
         $response = $client->getResponse();
 
         $this->assertSame($statusCode, $response->getStatusCode());
         $this->assertStringContainsString($pageTitle, $title);
     }
 
-    /**
-     * @group legacy
-     * @dataProvider getRootAliasesWithLocale
-     *
-     * @expectedDeprecation Since contao/core-bundle 4.10: Using the "Contao\CoreBundle\Routing\FrontendLoader" class has been deprecated %s.
-     */
-    public function testResolvesTheRootPageWithLocaleInLegacyMode(array $fixtures, string $request, int $statusCode, string $pageTitle, string $acceptLanguages, string $host): void
-    {
-        Config::set('addLanguageToUrl', true);
-
-        $_SERVER['REQUEST_URI'] = $request;
-        $_SERVER['HTTP_HOST'] = $host;
-        $_SERVER['HTTP_ACCEPT_LANGUAGE'] = $acceptLanguages;
-
-        $client = $this->createClient(['environment' => 'locale'], $_SERVER);
-        System::setContainer($client->getContainer());
-
-        $this->loadFixtureFiles($fixtures);
-
-        $crawler = $client->request('GET', "http://$host$request");
-        $title = trim($crawler->filterXPath('//head/title')->text());
-
-        /** @var Response $response */
-        $response = $client->getResponse();
-
-        $this->assertSame($statusCode, $response->getStatusCode());
-        $this->assertStringContainsString($pageTitle, $title);
-    }
-
-    public function getRootAliasesWithLocale(): \Generator
+    public static function getRootAliasesWithLocale(): iterable
     {
         yield 'Redirects to the language root if one of the accept languages matches' => [
             ['theme', 'same-domain-root'],
             '/',
             302,
-            'Redirecting to http://same-domain-root.local/de/',
+            'Redirecting to https://same-domain-root.local/de/',
             'de,en',
             'same-domain-root.local',
         ];
@@ -1118,7 +759,7 @@ class RoutingTest extends FunctionalTestCase
             ['theme', 'same-domain-root'],
             '/',
             302,
-            'Redirecting to http://same-domain-root.local/en/',
+            'Redirecting to https://same-domain-root.local/en/',
             'en,de',
             'same-domain-root.local',
         ];
@@ -1127,7 +768,7 @@ class RoutingTest extends FunctionalTestCase
             ['theme', 'same-domain-root'],
             '/',
             302,
-            'Redirecting to http://same-domain-root.local/en/',
+            'Redirecting to https://same-domain-root.local/en/',
             'fr,es',
             'same-domain-root.local',
         ];
@@ -1136,7 +777,7 @@ class RoutingTest extends FunctionalTestCase
             ['theme', 'same-domain-root'],
             '/',
             302,
-            'Redirecting to http://same-domain-root.local/de/',
+            'Redirecting to https://same-domain-root.local/de/',
             'de-CH',
             'same-domain-root.local',
         ];
@@ -1145,25 +786,25 @@ class RoutingTest extends FunctionalTestCase
             ['theme', 'same-domain-root'],
             '/',
             302,
-            'Redirecting to http://same-domain-root.local/de/',
+            'Redirecting to https://same-domain-root.local/de/',
             'dE-at',
             'same-domain-root.local',
         ];
 
-        yield 'Redirects to "en" if "de-CH" and "en" are accepted and "de" is not' => [
+        yield 'Redirects to "de" if "de-CH" and "en" are accepted' => [
             ['theme', 'same-domain-root'],
             '/',
             302,
-            'Redirecting to http://same-domain-root.local/en/',
+            'Redirecting to https://same-domain-root.local/de/',
             'de-CH,en',
             'same-domain-root.local',
         ];
 
-        yield 'Renders the 404 page if none of the accept languages matches' => [
+        yield 'Renders the 404 exception if none of the accept languages matches' => [
             ['theme', 'root-without-fallback-language'],
             '/',
             404,
-            '(404 Not Found)',
+            'Not Found',
             'de,fr',
             'root-without-fallback-language.local',
         ];
@@ -1204,20 +845,20 @@ class RoutingTest extends FunctionalTestCase
             'same-domain-root-with-index.local',
         ];
 
-        yield 'Renders the 404 page if the locale does not match' => [
+        yield 'Renders the 404 exception if the locale does not match' => [
             ['theme', 'root-with-index'],
             '/de/',
             404,
-            '(404 Not Found)',
+            'Not Found',
             'de,fr',
             'root-with-index.local',
         ];
 
-        yield 'Renders the 404 page if the locale does not exist' => [
+        yield 'Renders the 404 exception if the locale does not exist' => [
             ['theme', 'root-without-fallback-language'],
             '/fr/',
             404,
-            '(404 Not Found)',
+            'Not Found',
             'de,fr',
             'root-without-fallback-language.local',
         ];
@@ -1226,33 +867,303 @@ class RoutingTest extends FunctionalTestCase
             ['theme', 'language-index-mix'],
             '/',
             302,
-            'Redirecting to http://example.com/de/',
+            'Redirecting to https://example.com/de/',
             'de,en',
+            'example.com',
+        ];
+
+        yield 'Redirects to preferred language and region' => [
+            ['theme', 'language-and-region'],
+            '/',
+            302,
+            'Redirecting to https://example.com/de-CH/',
+            'de,de-CH,fr',
+            'example.com',
+        ];
+
+        yield 'Redirects to preferred language and ignores region if it does not exist' => [
+            ['theme', 'language-and-region'],
+            '/',
+            302,
+            'Redirecting to https://example.com/it-CH/',
+            'it-IT,de',
+            'example.com',
+        ];
+
+        yield 'Redirects to the language region by root page sorting' => [
+            ['theme', 'language-and-region'],
+            '/',
+            302,
+            'Redirecting to https://example.com/de-CH/',
+            'de',
             'example.com',
         ];
     }
 
     public function testOrdersThePageModelsByCandidates(): void
     {
-        Config::set('folderUrl', true);
+        $request = 'https://root-zh.local/main/sub-zh.html';
 
-        $_SERVER['REQUEST_URI'] = '/main/sub-zh.html';
+        $_SERVER['REQUEST_URI'] = $request;
         $_SERVER['HTTP_HOST'] = 'root-zh.local';
         $_SERVER['HTTP_ACCEPT_LANGUAGE'] = 'en';
+        $_SERVER['HTTP_ACCEPT'] = 'text/html';
 
         $client = $this->createClient([], $_SERVER);
         System::setContainer($client->getContainer());
 
         $this->loadFixtureFiles(['theme', 'language-sorting']);
 
-        $crawler = $client->request('GET', '/main/sub-zh.html');
+        $crawler = $client->request('GET', $request);
         $title = trim($crawler->filterXPath('//head/title')->text());
-
-        /** @var Response $response */
         $response = $client->getResponse();
 
         $this->assertSame(200, $response->getStatusCode());
         $this->assertStringContainsString('', $title);
+    }
+
+    /**
+     * @see https://github.com/contao/contao/issues/6328
+     */
+    #[DataProvider('disabledLanguageRedirectsProvider')]
+    public function testCorrectHandlesDisabledLanguageRedirects(bool $disableLanguageRedirects, bool $indexAlias, string $requestLocale, string $expectedLocation): void
+    {
+        $request = 'https://example.local/';
+
+        $_SERVER['REQUEST_URI'] = $request;
+        $_SERVER['HTTP_HOST'] = 'example.local';
+        $_SERVER['HTTP_ACCEPT_LANGUAGE'] = $requestLocale;
+        $_SERVER['HTTP_ACCEPT'] = 'text/html';
+
+        $client = $this->createClient([], $_SERVER);
+        System::setContainer($client->getContainer());
+
+        $this->loadFixtureFiles(['disable-language-redirect']);
+
+        $disableLanguageRedirect = $disableLanguageRedirects ? 1 : 0;
+        $alias = $indexAlias ? 'index' : 'home';
+
+        $connection = self::getContainer()->get('doctrine')->getConnection();
+        $connection->executeStatement("UPDATE tl_page SET disableLanguageRedirect = $disableLanguageRedirect WHERE id = 3");
+        $connection->executeStatement("UPDATE tl_page SET alias = '$alias' WHERE type = 'regular'");
+
+        $client->request('GET', $request);
+        $response = $client->getResponse();
+
+        if ($expectedLocation === $request) {
+            $this->assertSame(200, $response->getStatusCode());
+        } else {
+            $this->assertSame(302, $response->getStatusCode());
+            $this->assertSame($expectedLocation, $response->headers->get('Location'));
+        }
+    }
+
+    public static function disabledLanguageRedirectsProvider(): iterable
+    {
+        // Redirects to fallback because it is the only route on path "/"
+        yield 'unknown locale, alias=home, disableLanguageRedirect=1' => [
+            true,
+            false,
+            'af',
+            'https://example.local/en/',
+        ];
+
+        // Redirects to NL because its root page matches "/" before the fallback one
+        yield 'unknown locale, alias=home, disableLanguageRedirect=0' => [
+            false,
+            false,
+            'af',
+            'https://example.local/home.html',
+        ];
+
+        // Redirects to fallback because it is the only route on path "/"
+        yield 'secondary locale, alias=home, disableLanguageRedirect=1' => [
+            true,
+            false,
+            'nl',
+            'https://example.local/en/',
+        ];
+
+        // Redirects to NL because its root page matches "/" before the fallback one
+        yield 'secondary locale, alias=home, disableLanguageRedirect=0' => [
+            false,
+            false,
+            'nl',
+            'https://example.local/home.html',
+        ];
+
+        // Redirects to fallback because it is the only route on path "/"
+        yield 'fallback locale, alias=home, disableLanguageRedirect=1' => [
+            true,
+            false,
+            'en',
+            'https://example.local/en/',
+        ];
+
+        // Redirects to NL because its root page matches "/" before the fallback one
+        yield 'fallback locale, alias=home, disableLanguageRedirect=0' => [
+            false,
+            false,
+            'en',
+            'https://example.local/home.html',
+        ];
+
+        // Renders the NL index page because it matches "/" before the fallback
+        yield 'unknown locale, alias=index, disableLanguageRedirect=1' => [
+            true,
+            true,
+            'af',
+            'https://example.local/',
+        ];
+
+        // Renders the NL index page because it matches "/" before the fallback
+        yield 'unknown locale, alias=index, disableLanguageRedirect=0' => [
+            false,
+            true,
+            'af',
+            'https://example.local/',
+        ];
+
+        // Renders the NL index page because it matches "/" before the fallback
+        yield 'secondary locale, alias=index, disableLanguageRedirect=1' => [
+            true,
+            true,
+            'nl',
+            'https://example.local/',
+        ];
+
+        // Renders the NL index page because it matches "/" before the fallback
+        yield 'secondary locale, alias=index, disableLanguageRedirect=0' => [
+            false,
+            true,
+            'nl',
+            'https://example.local/',
+        ];
+
+        // Renders the NL index page because it matches "/" before the fallback
+        yield 'fallback locale, alias=index, disableLanguageRedirect=1' => [
+            true,
+            true,
+            'en',
+            'https://example.local/',
+        ];
+
+        // Renders the NL index page because it matches "/" before the fallback
+        yield 'fallback locale, alias=index, disableLanguageRedirect=0' => [
+            false,
+            true,
+            'en',
+            'https://example.local/',
+        ];
+    }
+
+    public function testRendersLoginPageWhenRootIsProtected(): void
+    {
+        $request = 'https://protected-root.local/';
+
+        $_SERVER['REQUEST_URI'] = $request;
+        $_SERVER['HTTP_HOST'] = 'protected-root.local';
+        $_SERVER['HTTP_ACCEPT_LANGUAGE'] = 'en';
+        $_SERVER['HTTP_ACCEPT'] = 'text/html';
+
+        $client = $this->createClient([], $_SERVER);
+        System::setContainer($client->getContainer());
+
+        $this->loadFixtureFiles(['theme', 'protected-root']);
+
+        $crawler = $client->request('GET', $request);
+        $title = trim($crawler->filterXPath('//head/title')->text());
+        $response = $client->getResponse();
+
+        $this->assertSame(401, $response->getStatusCode());
+        $this->assertStringContainsString('Error 401 Page', $title);
+    }
+
+    #[DataProvider('getUrlPrefixMixProvider')]
+    public function testUrlPrefixMix(string $request, string $acceptLanguage, int $statusCode, string $pageTitle): void
+    {
+        $_SERVER['REQUEST_URI'] = $request;
+        $_SERVER['HTTP_HOST'] = 'example.local';
+        $_SERVER['HTTP_ACCEPT_LANGUAGE'] = $acceptLanguage;
+        $_SERVER['HTTP_ACCEPT'] = 'text/html';
+
+        $client = $this->createClient([], $_SERVER);
+        System::setContainer($client->getContainer());
+
+        $this->loadFixtureFiles(['theme', 'url-prefix-mix']);
+
+        $crawler = $client->request('GET', "https://example.local$request");
+        $title = trim($crawler->filterXPath('//head/title')->text());
+        $response = $client->getResponse();
+
+        $this->assertSame($statusCode, $response->getStatusCode());
+        $this->assertStringContainsString($pageTitle, $title);
+    }
+
+    public static function getUrlPrefixMixProvider(): iterable
+    {
+        yield 'Renders the index page of supported accept language' => [
+            '/',
+            'nl',
+            200,
+            'Dutch site',
+        ];
+
+        yield 'Renders the index page of root with url prefix' => [
+            '/en/',
+            'en',
+            200,
+            'English site',
+        ];
+
+        yield 'Renders the index page of root without url prefix' => [
+            '/',
+            'en',
+            200,
+            'Dutch site',
+        ];
+
+        yield 'Renders the english 404 with "en" accept language' => [
+            '/nl/',
+            'en',
+            404,
+            'English 404 - English root',
+        ];
+
+        yield 'Renders the dutch 404 with "nl" accept language' => [
+            '/nl/',
+            'nl',
+            404,
+            'Dutch 404 - Dutch root',
+        ];
+
+        yield 'Renders the fallback root 404 on invalid prefix with unsupported accept language' => [
+            '/nl/',
+            'fr',
+            404,
+            'English 404 - English root',
+        ];
+    }
+
+    public function testMultidomainWithLanguages(): void
+    {
+        $request = '/de/bar/bar';
+        $_SERVER['REQUEST_URI'] = $request;
+        $_SERVER['HTTP_HOST'] = 'example.ch';
+        $_SERVER['HTTP_ACCEPT_LANGUAGE'] = 'en_US,en';
+        $_SERVER['HTTP_ACCEPT'] = 'text/html';
+
+        $client = $this->createClient([], $_SERVER);
+        System::setContainer($client->getContainer());
+
+        $this->loadFixtureFiles(['theme', 'multidomain-languages']);
+
+        $crawler = $client->request('GET', "https://example.ch$request");
+        $title = trim($crawler->filterXPath('//head/title')->text());
+        $response = $client->getResponse();
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertStringContainsString('Bar -', $title);
     }
 
     private function loadFixtureFiles(array $fileNames): void
@@ -1265,10 +1176,8 @@ class RoutingTest extends FunctionalTestCase
         self::$lastImport = $fileNames;
 
         static::loadFixtures(array_map(
-            static function ($file) {
-                return __DIR__.'/../Fixtures/Functional/Routing/'.$file.'.yml';
-            },
-            $fileNames
+            static fn ($file) => __DIR__.'/../Fixtures/Functional/Routing/'.$file.'.yaml',
+            $fileNames,
         ));
     }
 }

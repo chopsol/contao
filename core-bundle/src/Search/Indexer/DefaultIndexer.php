@@ -15,33 +15,18 @@ namespace Contao\CoreBundle\Search\Indexer;
 use Contao\CoreBundle\Framework\ContaoFramework;
 use Contao\CoreBundle\Search\Document;
 use Contao\Search;
-use Doctrine\DBAL\Driver\Connection;
+use Doctrine\DBAL\Connection;
 
 class DefaultIndexer implements IndexerInterface
 {
     /**
-     * @var ContaoFramework
+     * @internal
      */
-    private $framework;
-
-    /**
-     * @var Connection
-     */
-    private $connection;
-
-    /**
-     * @var bool
-     */
-    private $indexProtected;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.search.indexer.default" service instead
-     */
-    public function __construct(ContaoFramework $framework, Connection $connection, bool $indexProtected = false)
-    {
-        $this->framework = $framework;
-        $this->connection = $connection;
-        $this->indexProtected = $indexProtected;
+    public function __construct(
+        private readonly ContaoFramework $framework,
+        private readonly Connection $connection,
+        private readonly bool $indexProtected = false,
+    ) {
     }
 
     public function index(Document $document): void
@@ -54,15 +39,19 @@ class DefaultIndexer implements IndexerInterface
             $this->throwBecause('Cannot index empty response.');
         }
 
+        if (($canonical = $document->extractCanonicalUri()) && (string) $canonical !== (string) $document->getUri()) {
+            $this->throwBecause(\sprintf('Ignored because canonical URI "%s" does not match document URI.', $canonical));
+        }
+
         try {
             $title = $document->getContentCrawler()->filterXPath('//head/title')->first()->text();
-        } catch (\Exception $e) {
+        } catch (\Exception) {
             $title = 'undefined';
         }
 
         try {
             $language = $document->getContentCrawler()->filterXPath('//html[@lang]')->first()->attr('lang');
-        } catch (\Exception $e) {
+        } catch (\Exception) {
             $language = 'en';
         }
 
@@ -96,18 +85,18 @@ class DefaultIndexer implements IndexerInterface
 
         $this->framework->initialize();
 
-        /** @var Search $search */
         $search = $this->framework->getAdapter(Search::class);
 
         try {
             $search->indexPage([
                 'url' => (string) $document->getUri(),
                 'content' => $document->getBody(),
-                'protected' => $meta['protected'] ? '1' : '',
+                'protected' => (bool) $meta['protected'],
                 'groups' => $meta['groups'],
                 'pid' => $meta['pageId'],
                 'title' => $meta['title'],
                 'language' => $meta['language'],
+                'meta' => $document->extractJsonLdScripts(),
             ]);
         } catch (\Throwable $t) {
             $this->throwBecause('Could not add a search index entry: '.$t->getMessage(), false);
@@ -116,22 +105,19 @@ class DefaultIndexer implements IndexerInterface
 
     public function delete(Document $document): void
     {
-        $this->framework->initialize();
-
-        /** @var Search $search */
         $search = $this->framework->getAdapter(Search::class);
-        $search->removeEntry((string) $document->getUri());
+        $search->removeEntry((string) $document->getUri(), $this->connection);
     }
 
     public function clear(): void
     {
-        $this->connection->exec('TRUNCATE TABLE tl_search');
-        $this->connection->exec('TRUNCATE TABLE tl_search_index');
-        $this->connection->exec('TRUNCATE TABLE tl_search_term');
+        $this->connection->executeStatement('TRUNCATE TABLE tl_search');
+        $this->connection->executeStatement('TRUNCATE TABLE tl_search_index');
+        $this->connection->executeStatement('TRUNCATE TABLE tl_search_term');
     }
 
     /**
-     * @throws IndexerException
+     * @return never
      */
     private function throwBecause(string $message, bool $onlyWarning = true): void
     {
@@ -146,17 +132,11 @@ class DefaultIndexer implements IndexerInterface
     {
         $jsonLds = $document->extractJsonLdScripts('https://schema.contao.org/', 'Page');
 
-        if (0 === \count($jsonLds)) {
-            $jsonLds = $document->extractJsonLdScripts('https://schema.contao.org/', 'RegularPage');
-
-            if (0 === \count($jsonLds)) {
-                $this->throwBecause('No JSON-LD found.');
-            }
-
-            @trigger_error('Using the JSON-LD type "RegularPage" has been deprecated and will no longer work in Contao 5.0. Use "Page" instead.', E_USER_DEPRECATED);
+        if (!$jsonLds) {
+            $this->throwBecause('No JSON-LD found.');
         }
 
         // Merge all entries to one meta array (the latter overrides the former)
-        $meta = array_merge($meta, array_merge(...$jsonLds));
+        $meta = [...$meta, ...array_merge(...$jsonLds)];
     }
 }

@@ -13,9 +13,10 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\EventListener\Menu;
 
 use Contao\CoreBundle\Event\MenuEvent;
+use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\Routing\RouterInterface;
 use Symfony\Component\Security\Core\Authentication\Token\SwitchUserToken;
-use Symfony\Component\Security\Core\Security;
 use Symfony\Component\Security\Http\Firewall\SwitchUserListener;
 use Symfony\Component\Security\Http\Logout\LogoutUrlGenerator as BaseLogoutUrlGenerator;
 use Symfony\Contracts\Translation\TranslatorInterface;
@@ -23,34 +24,15 @@ use Symfony\Contracts\Translation\TranslatorInterface;
 /**
  * @internal
  */
+#[AsEventListener(priority: -96)]
 class BackendLogoutListener
 {
-    /**
-     * @var Security
-     */
-    private $security;
-
-    /**
-     * @var RouterInterface
-     */
-    private $router;
-
-    /**
-     * @var BaseLogoutUrlGenerator
-     */
-    private $urlGenerator;
-
-    /**
-     * @var TranslatorInterface
-     */
-    private $translator;
-
-    public function __construct(Security $security, RouterInterface $router, BaseLogoutUrlGenerator $urlGenerator, TranslatorInterface $translator)
-    {
-        $this->security = $security;
-        $this->router = $router;
-        $this->urlGenerator = $urlGenerator;
-        $this->translator = $translator;
+    public function __construct(
+        private readonly Security $security,
+        private readonly RouterInterface $router,
+        private readonly BaseLogoutUrlGenerator $urlGenerator,
+        private readonly TranslatorInterface $translator,
+    ) {
     }
 
     public function __invoke(MenuEvent $event): void
@@ -70,8 +52,10 @@ class BackendLogoutListener
             ->createItem('logout')
             ->setLabel($this->getLogoutLabel())
             ->setUri($this->getLogoutUrl())
+            ->setAttribute('class', 'logout')
             ->setLinkAttribute('class', 'icon-logout')
             ->setLinkAttribute('accesskey', 'q')
+            ->setLinkAttribute('data-turbo-prefetch', 'false')
             ->setExtra('translation_domain', false)
         ;
 
@@ -85,8 +69,8 @@ class BackendLogoutListener
         if ($token instanceof SwitchUserToken) {
             return $this->translator->trans(
                 'MSC.switchBT',
-                [$token->getOriginalToken()->getUsername()],
-                'contao_default'
+                [$token->getOriginalToken()->getUserIdentifier()],
+                'contao_default',
             );
         }
 

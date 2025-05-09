@@ -14,49 +14,40 @@ namespace Contao\CoreBundle\Routing\Page;
 
 use Contao\PageModel;
 use Doctrine\DBAL\Connection;
+use Symfony\Contracts\Service\ResetInterface;
 
-class PageRegistry
+class PageRegistry implements ResetInterface
 {
-    /**
-     * @var Connection
-     */
-    private $connection;
+    private const DISABLE_CONTENT_COMPOSITION = ['forward', 'logout'];
+
+    private array|null $urlPrefixes = null;
+
+    private array|null $urlSuffixes = null;
 
     /**
-     * @var array<RouteConfig>
+     * @var array<string, RouteConfig>
      */
-    private $routeConfigs = [];
+    private array $routeConfigs = [];
 
     /**
-     * @var array<DynamicRouteInterface>
+     * @var array<string, DynamicRouteInterface>
      */
-    private $routeEnhancers = [];
+    private array $routeEnhancers = [];
 
     /**
-     * @var array<ContentCompositionInterface|bool>
+     * @var array<string, ContentCompositionInterface|bool>
      */
-    private $contentComposition = [];
+    private array $contentComposition = [];
 
-    /**
-     * @var array<string>|null
-     */
-    private $urlPrefixes;
-
-    /**
-     * @var array<string>|null
-     */
-    private $urlSuffixes;
-
-    public function __construct(Connection $connection)
+    public function __construct(private readonly Connection $connection)
     {
-        $this->connection = $connection;
     }
 
     /**
      * Returns the route for a page.
      *
-     * If no path is configured (is null), the route will accept
-     * any parameters after the page alias (e.g. "en/page-alias/foo/bar.html").
+     * If no path is configured (is null), the route will accept any parameters after
+     * the page alias (e.g. "en/page-alias/foo/bar.html").
      *
      * A route enhancer might enhance the route for a specific page.
      */
@@ -66,15 +57,23 @@ class PageRegistry
         $config = $this->routeConfigs[$type] ?? new RouteConfig();
         $defaults = $config->getDefaults();
         $requirements = $config->getRequirements();
+        $options = $config->getOptions();
         $path = $config->getPath();
 
-        if (null === $path) {
-            $path = '/'.($pageModel->alias ?: $pageModel->id).'{!parameters}';
-            $defaults['parameters'] = '';
-            $requirements['parameters'] = $pageModel->requireItem ? '/.+' : '(/.+)?';
+        if (false === $path) {
+            $path = '';
+            $options['compiler_class'] = UnroutablePageRouteCompiler::class;
+        } elseif (null === $path) {
+            if ($this->isParameterless($pageModel)) {
+                $path = '/'.($pageModel->alias ?: $pageModel->id);
+            } else {
+                $path = '/'.($pageModel->alias ?: $pageModel->id).'{!parameters}';
+                $defaults['parameters'] ??= '';
+                $requirements['parameters'] ??= $pageModel->requireItem ? '/.+?' : '(/.+?)?';
+            }
         }
 
-        $route = new PageRoute($pageModel, $path, $defaults, $requirements, $config->getOptions(), $config->getMethods());
+        $route = new PageRoute($pageModel, $path, $defaults, $requirements, $options, $config->getMethods());
 
         if (null !== $config->getUrlSuffix()) {
             $route->setUrlSuffix($config->getUrlSuffix());
@@ -84,7 +83,6 @@ class PageRegistry
             return $route;
         }
 
-        /** @var DynamicRouteInterface $enhancer */
         $enhancer = $this->routeEnhancers[$type];
         $enhancer->configurePageRoute($route);
 
@@ -95,7 +93,6 @@ class PageRegistry
     {
         $prefixes = [];
 
-        /** @var RouteConfig $config */
         foreach ($this->routeConfigs as $type => $config) {
             $regex = $config->getPathRegex();
 
@@ -110,7 +107,7 @@ class PageRegistry
     public function supportsContentComposition(PageModel $pageModel): bool
     {
         if (!isset($this->contentComposition[$pageModel->type])) {
-            return true;
+            return !\in_array($pageModel->type, self::DISABLE_CONTENT_COMPOSITION, true);
         }
 
         $service = $this->contentComposition[$pageModel->type];
@@ -142,23 +139,20 @@ class PageRegistry
         return $this->urlSuffixes;
     }
 
-    /**
-     * @param ContentCompositionInterface|bool $contentComposition
-     */
-    public function add(string $type, RouteConfig $config, DynamicRouteInterface $routeEnhancer = null, $contentComposition = true): self
+    public function add(string $type, RouteConfig $config, DynamicRouteInterface|null $routeEnhancer = null, ContentCompositionInterface|bool $contentComposition = true): self
     {
         // Override existing pages with the same identifier
         $this->routeConfigs[$type] = $config;
 
-        if (null !== $routeEnhancer) {
+        if ($routeEnhancer) {
             $this->routeEnhancers[$type] = $routeEnhancer;
         }
 
-        if (null !== $contentComposition) {
-            $this->contentComposition[$type] = $contentComposition;
-        }
+        $this->contentComposition[$type] = $contentComposition;
 
-        $this->urlPrefixes = $this->urlSuffixes = null;
+        // Make sure to reset caches when a page type is added
+        $this->urlPrefixes = null;
+        $this->urlSuffixes = null;
 
         return $this;
     }
@@ -168,7 +162,7 @@ class PageRegistry
         unset(
             $this->routeConfigs[$type],
             $this->routeEnhancers[$type],
-            $this->contentComposition[$type]
+            $this->contentComposition[$type],
         );
 
         $this->urlPrefixes = $this->urlSuffixes = null;
@@ -181,24 +175,57 @@ class PageRegistry
         return array_keys($this->routeConfigs);
     }
 
+    /**
+     * Checks whether this is a routable page type (see #3415).
+     */
+    public function isRoutable(PageModel $page): bool
+    {
+        $type = $page->type;
+
+        // Any legacy page without route config is routable by default
+        if (!isset($this->routeConfigs[$type])) {
+            return true;
+        }
+
+        // Check if page controller is routable
+        return false !== $this->routeConfigs[$type]->getPath();
+    }
+
+    /**
+     * @return array<string>
+     */
+    public function getUnroutableTypes(): array
+    {
+        $types = [];
+
+        foreach ($this->routeConfigs as $type => $config) {
+            if (false === $config->getPath()) {
+                $types[] = $type;
+            }
+        }
+
+        return $types;
+    }
+
+    public function reset(): void
+    {
+        $this->urlPrefixes = null;
+        $this->urlSuffixes = null;
+    }
+
     private function initializePrefixAndSuffix(): void
     {
         if (null !== $this->urlPrefixes || null !== $this->urlSuffixes) {
             return;
         }
 
-        $results = $this->connection
-            ->query("SELECT urlPrefix, urlSuffix FROM tl_page WHERE type='root'")
-            ->fetchAll()
-        ;
+        $results = $this->connection->fetchAllAssociative("SELECT urlPrefix, urlSuffix FROM tl_page WHERE type = 'root'");
 
         $urlSuffixes = [
             array_column($results, 'urlSuffix'),
             array_filter(array_map(
-                static function (RouteConfig $config) {
-                    return $config->getUrlSuffix();
-                },
-                $this->routeConfigs
+                static fn (RouteConfig $config) => $config->getUrlSuffix(),
+                $this->routeConfigs,
             )),
         ];
 
@@ -214,5 +241,10 @@ class PageRegistry
 
         $this->urlSuffixes = array_values(array_unique(array_merge(...$urlSuffixes)));
         $this->urlPrefixes = array_values(array_unique(array_column($results, 'urlPrefix')));
+    }
+
+    private function isParameterless(PageModel $pageModel): bool
+    {
+        return 'forward' === $pageModel->type && !$pageModel->alwaysForward;
     }
 }

@@ -12,17 +12,14 @@ declare(strict_types=1);
 
 namespace Contao\ManagerBundle\Twig;
 
-use Webmozart\PathUtil\Path;
+use Symfony\Component\Filesystem\Path;
 
 class FileExtensionFilterIterator implements \IteratorAggregate
 {
-    /**
-     * @var \Traversable
-     */
-    private $iterator;
+    private readonly \Traversable $iterator;
 
     /**
-     * @internal Do not inherit from this class; decorate the "contao_manager.twig.file_extension_filter_iterator" service instead
+     * @internal
      */
     public function __construct(\IteratorAggregate $templateIterator)
     {
@@ -33,9 +30,7 @@ class FileExtensionFilterIterator implements \IteratorAggregate
     {
         return new \CallbackFilterIterator(
             new \IteratorIterator($this->iterator),
-            static function ($path): bool {
-                return 0 === strncmp($path, '@', 1) || 'twig' === Path::getExtension($path, true);
-            }
+            static fn ($path): bool => str_starts_with($path, '@') || 'twig' === Path::getExtension($path, true),
         );
     }
 }

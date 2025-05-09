@@ -13,13 +13,9 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Routing;
 
 use Contao\CoreBundle\Exception\NoRootPageFoundException;
-use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\CoreBundle\Routing\Page\PageRegistry;
 use Contao\CoreBundle\Routing\Page\PageRoute;
 use Contao\Model\Collection;
 use Contao\PageModel;
-use Contao\System;
-use Symfony\Cmf\Component\Routing\Candidates\CandidatesInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Exception\RouteNotFoundException;
 use Symfony\Component\Routing\Route;
@@ -27,55 +23,26 @@ use Symfony\Component\Routing\RouteCollection;
 
 class RouteProvider extends AbstractPageRouteProvider
 {
-    /**
-     * @var PageRegistry
-     */
-    private $pageRegistry;
-
-    /**
-     * @var bool
-     */
-    private $legacyRouting;
-
-    /**
-     * @var bool
-     */
-    private $prependLocale;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.routing.route_provider" service instead
-     */
-    public function __construct(ContaoFramework $framework, CandidatesInterface $candidates, PageRegistry $pageRegistry, bool $legacyRouting, bool $prependLocale)
-    {
-        parent::__construct($framework, $candidates);
-
-        $this->pageRegistry = $pageRegistry;
-        $this->legacyRouting = $legacyRouting;
-        $this->prependLocale = $prependLocale;
-    }
-
     public function getRouteCollectionForRequest(Request $request): RouteCollection
     {
-        $this->framework->initialize(true);
+        $this->framework->initialize();
 
         $pathInfo = rawurldecode($request->getPathInfo());
 
-        // The request string must not contain "auto_item" (see #4012)
-        if (false !== strpos($pathInfo, '/auto_item/')) {
+        // The request string must start with "/" and must not contain "auto_item" (see #4012)
+        if (!str_starts_with($pathInfo, '/') || str_contains($pathInfo, '/auto_item/')) {
             return new RouteCollection();
         }
 
         $routes = [];
 
-        if ('/' === $pathInfo || ($this->legacyRouting && $this->prependLocale && preg_match('@^/([a-z]{2}(-[A-Z]{2})?)/$@', $pathInfo))) {
+        if ('/' === $pathInfo) {
             $this->addRoutesForRootPages($this->findRootPages($request->getHttpHost()), $routes);
 
             return $this->createCollectionForRoutes($routes, $request->getLanguages());
         }
 
-        $pages = $this->findCandidatePages($request);
-
-        if (empty($pages)) {
+        if (!$pages = $this->findCandidatePages($request)) {
             return new RouteCollection();
         }
 
@@ -84,22 +51,19 @@ class RouteProvider extends AbstractPageRouteProvider
         return $this->createCollectionForRoutes($routes, $request->getLanguages());
     }
 
-    public function getRouteByName($name): Route
+    public function getRouteByName(string $name): Route
     {
-        $this->framework->initialize(true);
+        $this->framework->initialize();
 
-        $ids = $this->getPageIdsFromNames([$name]);
-
-        if (empty($ids)) {
+        if (!$ids = $this->getPageIdsFromNames([$name])) {
             throw new RouteNotFoundException('Route name does not match a page ID');
         }
 
-        /** @var PageModel $pageModel */
         $pageModel = $this->framework->getAdapter(PageModel::class);
-        $page = $pageModel->findByPk($ids[0]);
+        $page = $pageModel->findById($ids[0]);
 
-        if (null === $page) {
-            throw new RouteNotFoundException(sprintf('Page ID "%s" not found', $ids[0]));
+        if (!$page || !$this->pageRegistry->isRoutable($page)) {
+            throw new RouteNotFoundException(\sprintf('Page ID "%s" not found', $ids[0]));
         }
 
         $routes = [];
@@ -113,19 +77,16 @@ class RouteProvider extends AbstractPageRouteProvider
         return $routes[$name];
     }
 
-    public function getRoutesByNames($names): array
+    public function getRoutesByNames($names = null): iterable
     {
-        $this->framework->initialize(true);
+        $this->framework->initialize();
 
-        /** @var PageModel $pageModel */
         $pageModel = $this->framework->getAdapter(PageModel::class);
 
         if (null === $names) {
             $pages = $pageModel->findAll();
         } else {
-            $ids = $this->getPageIdsFromNames($names);
-
-            if (empty($ids)) {
+            if (!$ids = $this->getPageIdsFromNames($names)) {
                 return [];
             }
 
@@ -138,7 +99,10 @@ class RouteProvider extends AbstractPageRouteProvider
 
         $routes = [];
 
-        $this->addRoutesForPages($pages, $routes);
+        $models = $pages->getModels();
+        $models = array_filter($models, fn (PageModel $page): bool => $this->pageRegistry->isRoutable($page));
+
+        $this->addRoutesForPages($models, $routes);
         $this->sortRoutes($routes);
 
         return $routes;
@@ -160,7 +124,8 @@ class RouteProvider extends AbstractPageRouteProvider
     private function addRoutesForRootPages(array $pages, array &$routes): void
     {
         foreach ($pages as $page) {
-            $this->addRoutesForRootPage($page, $routes);
+            $route = $this->pageRegistry->getRoute($page);
+            $this->addRoutesForRootPage($route, $routes);
         }
     }
 
@@ -185,28 +150,31 @@ class RouteProvider extends AbstractPageRouteProvider
             if (!$page->rootId) {
                 return;
             }
-        } catch (NoRootPageFoundException $e) {
+        } catch (NoRootPageFoundException) {
             return;
         }
 
         $route = $this->pageRegistry->getRoute($page);
         $routes['tl_page.'.$page->id] = $route;
 
-        $this->addRoutesForRootPage($page, $routes);
+        $this->addRoutesForRootPage($route, $routes);
     }
 
-    private function addRoutesForRootPage(PageModel $page, array &$routes): void
+    private function addRoutesForRootPage(PageRoute $route, array &$routes): void
     {
+        $page = $route->getPageModel();
+
+        // Only create "root" routes for root pages or pages with root alias
         if ('root' !== $page->type && 'index' !== $page->alias && '/' !== $page->alias) {
             return;
         }
 
-        $page->loadDetails();
-        $route = $this->pageRegistry->getRoute($page);
-        $urlPrefix = '';
+        $urlPrefix = $route->getUrlPrefix();
 
-        if ($route instanceof PageRoute) {
-            $urlPrefix = $route->getUrlPrefix();
+        // Do not create a ".root" route for root pages without prefix if
+        // `disableLanguageRedirect` is enabled
+        if ('root' === $page->type && !$urlPrefix && $page->disableLanguageRedirect) {
+            return;
         }
 
         $routes['tl_page.'.$page->id.'.root'] = new Route(
@@ -216,28 +184,27 @@ class RouteProvider extends AbstractPageRouteProvider
             $route->getOptions(),
             $route->getHost(),
             $route->getSchemes(),
-            $route->getMethods()
+            $route->getMethods(),
         );
 
-        if (!$urlPrefix || (!$this->legacyRouting && $page->disableLanguageRedirect)) {
+        // Do not create ".fallback" route if `disableLanguageRedirect` is enabled
+        if (!$urlPrefix || $page->loadDetails()->disableLanguageRedirect) {
             return;
         }
 
         $routes['tl_page.'.$page->id.'.fallback'] = new Route(
             '/',
-            array_merge(
-                $route->getDefaults(),
-                [
-                    '_controller' => 'Symfony\Bundle\FrameworkBundle\Controller\RedirectController::urlRedirectAction',
-                    'path' => '/'.$urlPrefix.'/',
-                    'permanent' => false,
-                ]
-            ),
+            [
+                ...$route->getDefaults(),
+                '_controller' => 'Symfony\Bundle\FrameworkBundle\Controller\RedirectController::urlRedirectAction',
+                'path' => '/'.$urlPrefix.'/',
+                'permanent' => false,
+            ],
             [],
             $route->getOptions(),
             $route->getHost(),
             $route->getSchemes(),
-            $route->getMethods()
+            $route->getMethods(),
         );
     }
 
@@ -249,16 +216,21 @@ class RouteProvider extends AbstractPageRouteProvider
      * 3. Root/Index pages must be sorted by accept language and fallback, so the best language matches first
      * 4. Pages with longer alias (folder page) must come first to match if applicable
      */
-    private function sortRoutes(array &$routes, array $languages = null): void
+    private function sortRoutes(array &$routes, array|null $languages = null): void
     {
+        // Convert languages array so key is language and value is priority
+        if (null !== $languages) {
+            $languages = $this->convertLanguagesForSorting($languages);
+        }
+
         uasort(
             $routes,
-            function (Route $a, Route $b) use ($languages, $routes) {
+            function (Route $a, Route $b) use ($routes, $languages) {
                 $nameA = array_search($a, $routes, true);
                 $nameB = array_search($b, $routes, true);
 
-                $fallbackA = 0 === substr_compare($nameA, '.fallback', -9);
-                $fallbackB = 0 === substr_compare($nameB, '.fallback', -9);
+                $fallbackA = str_ends_with($nameA, '.fallback');
+                $fallbackB = str_ends_with($nameB, '.fallback');
 
                 if ($fallbackA && !$fallbackB) {
                     return 1;
@@ -268,13 +240,16 @@ class RouteProvider extends AbstractPageRouteProvider
                     return -1;
                 }
 
-                // Convert languages array so key is language and value is priority
-                if (null !== $languages) {
-                    $languages = $this->convertLanguagesForSorting($languages);
+                if ('/' === $a->getPath() && '/' !== $b->getPath()) {
+                    return -1;
+                }
+
+                if ('/' === $b->getPath() && '/' !== $a->getPath()) {
+                    return 1;
                 }
 
                 return $this->compareRoutes($a, $b, $languages);
-            }
+            },
         );
     }
 
@@ -283,42 +258,25 @@ class RouteProvider extends AbstractPageRouteProvider
      */
     private function findRootPages(string $httpHost): array
     {
-        if (
-            $this->legacyRouting
-            && !empty($GLOBALS['TL_HOOKS']['getRootPageFromUrl'])
-            && \is_array($GLOBALS['TL_HOOKS']['getRootPageFromUrl'])
-        ) {
-            /** @var System $system */
-            $system = $this->framework->getAdapter(System::class);
+        $models = [];
 
-            foreach ($GLOBALS['TL_HOOKS']['getRootPageFromUrl'] as $callback) {
-                $page = $system->importStatic($callback[0])->{$callback[1]}();
+        $pageModel = $this->framework->getAdapter(PageModel::class);
+        $pages = $pageModel->findBy(["(tl_page.type = 'root' AND (tl_page.dns = ? OR tl_page.dns = ''))"], $httpHost);
 
-                if ($page instanceof PageModel) {
-                    return [$page];
+        if ($pages instanceof Collection) {
+            $models = $pages->getModels();
+        }
+
+        $pages = $pageModel->findBy(['tl_page.alias = ? OR tl_page.alias = ?'], ['index', '/']);
+
+        if ($pages instanceof Collection) {
+            foreach ($pages as $page) {
+                if ($this->pageRegistry->isRoutable($page)) {
+                    $models[] = $page;
                 }
             }
         }
 
-        $rootPages = [];
-        $indexPages = [];
-
-        /** @var PageModel $pageModel */
-        $pageModel = $this->framework->getAdapter(PageModel::class);
-        $pages = $pageModel->findBy(["(tl_page.type='root' AND (tl_page.dns=? OR tl_page.dns=''))"], $httpHost);
-
-        if ($pages instanceof Collection) {
-            /** @var array<PageModel> $rootPages */
-            $rootPages = $pages->getModels();
-        }
-
-        $pages = $pageModel->findBy(["tl_page.alias='index' OR tl_page.alias='/'"], null);
-
-        if ($pages instanceof Collection) {
-            /** @var array<PageModel> $indexPages */
-            $indexPages = $pages->getModels();
-        }
-
-        return array_merge($rootPages, $indexPages);
+        return $models;
     }
 }

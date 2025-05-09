@@ -19,56 +19,38 @@ use Symfony\Component\HttpFoundation\RequestStack;
 class ContaoContext implements ContextInterface
 {
     /**
-     * @var RequestStack
+     * @internal Do not use this class in your code; use the "contao.assets.assets_context" or "contao.assets.files_context" service instead
      */
-    private $requestStack;
-
-    /**
-     * @var string
-     */
-    private $field;
-
-    /**
-     * @var bool
-     */
-    private $debug;
-
-    public function __construct(RequestStack $requestStack, string $field, bool $debug = false)
-    {
-        $this->requestStack = $requestStack;
-        $this->field = $field;
-        $this->debug = $debug;
+    public function __construct(
+        private readonly RequestStack $requestStack,
+        private readonly string $field,
+        private readonly bool $debug = false,
+    ) {
     }
 
     public function getBasePath(): string
     {
-        if ($this->debug) {
+        if (!$request = $this->requestStack->getCurrentRequest()) {
             return '';
         }
 
-        $request = $this->requestStack->getCurrentRequest();
-
-        if (null === $request || '' === ($staticUrl = $this->getFieldValue($this->getPageModel()))) {
-            return '';
+        if ($this->debug || '' === ($staticUrl = $this->getFieldValue($this->getPageModel()))) {
+            return $request->getBasePath();
         }
 
         $protocol = $this->isSecure() ? 'https' : 'http';
         $relative = preg_replace('@https?://@', '', $staticUrl);
 
-        return sprintf('%s://%s%s', $protocol, $relative, $request->getBasePath());
+        return \sprintf('%s://%s%s', $protocol, $relative, $request->getBasePath());
     }
 
     public function isSecure(): bool
     {
-        $page = $this->getPageModel();
-
-        if (null !== $page) {
-            return (bool) $page->loadDetails()->rootUseSSL;
+        if ($page = $this->getPageModel()) {
+            return $page->loadDetails()->rootUseSSL;
         }
 
-        $request = $this->requestStack->getCurrentRequest();
-
-        if (null === $request) {
+        if (!$request = $this->requestStack->getCurrentRequest()) {
             return false;
         }
 
@@ -76,21 +58,23 @@ class ContaoContext implements ContextInterface
     }
 
     /**
-     * Returns the base path with a trailing slash if not empty.
+     * Returns the base path with a trailing slash.
      */
     public function getStaticUrl(): string
     {
-        if ($path = $this->getBasePath()) {
-            return $path.'/';
-        }
-
-        return '';
+        return $this->getBasePath().'/';
     }
 
-    private function getPageModel(): ?PageModel
+    private function getPageModel(): PageModel|null
     {
-        if (isset($GLOBALS['objPage']) && $GLOBALS['objPage'] instanceof PageModel) {
-            return $GLOBALS['objPage'];
+        if (!$request = $this->requestStack->getCurrentRequest()) {
+            return null;
+        }
+
+        $pageModel = $request->attributes->get('pageModel');
+
+        if ($pageModel instanceof PageModel) {
+            return $pageModel;
         }
 
         return null;
@@ -99,12 +83,8 @@ class ContaoContext implements ContextInterface
     /**
      * Returns a field value from the page model.
      */
-    private function getFieldValue(?PageModel $page): string
+    private function getFieldValue(PageModel|null $page): string
     {
-        if (null === $page) {
-            return '';
-        }
-
-        return (string) $page->{$this->field};
+        return (string) $page?->{$this->field};
     }
 }

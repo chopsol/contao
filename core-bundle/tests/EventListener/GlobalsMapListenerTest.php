@@ -14,61 +14,53 @@ namespace Contao\CoreBundle\Tests\EventListener;
 
 use Contao\CoreBundle\EventListener\GlobalsMapListener;
 use Contao\CoreBundle\Tests\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class GlobalsMapListenerTest extends TestCase
 {
-    /**
-     * @dataProvider getValuesData
-     *
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
-     */
-    public function testMergesTheValuesIntoTheGlobalsArray(array $globals, array $values, array $expected): void
+    #[DataProvider('getValuesData')]
+    public function testMergesTheValuesIntoTheGlobalsArray(array $globals, array $fragments, array $expected): void
     {
-        $GLOBALS = $globals;
+        $GLOBALS['TL_CTE'] = $globals;
 
-        $listener = new GlobalsMapListener($values);
+        $listener = new GlobalsMapListener(['TL_CTE' => $fragments]);
         $listener->onInitializeSystem();
 
-        $this->assertSame($expected, $GLOBALS);
+        $this->assertSame($expected, $GLOBALS['TL_CTE']);
+
+        unset($GLOBALS['TL_CTE']);
     }
 
-    public function getValuesData(): \Generator
+    public static function getValuesData(): iterable
     {
-        yield [
+        yield 'add single' => [
             [],
-            ['foo' => 'bar'],
-            ['foo' => 'bar'],
+            [['text' => 'HeadlineFragment']],
+            ['text' => 'HeadlineFragment'],
         ];
 
-        yield [
-            ['bar' => 'baz'],
-            ['foo' => 'bar'],
-            ['bar' => 'baz', 'foo' => 'bar'],
-        ];
-
-        yield [
+        yield 'add group' => [
             [],
-            ['TL_CTE' => ['foo' => 'bar']],
-            ['TL_CTE' => ['foo' => 'bar']],
+            [['texts' => ['headline' => 'HeadlineFragment']]],
+            ['texts' => ['headline' => 'HeadlineFragment']],
         ];
 
-        yield [
-            ['TL_CTE' => ['bar' => 'baz']],
-            ['TL_CTE' => ['foo' => 'bar']],
-            ['TL_CTE' => ['bar' => 'baz', 'foo' => 'bar']],
+        yield 'add to existing group' => [
+            ['texts' => ['text' => 'LegacyText']],
+            [['texts' => ['headline' => 'HeadlineFragment']]],
+            ['texts' => ['text' => 'LegacyText', 'headline' => 'HeadlineFragment']],
         ];
 
-        yield [
-            ['TL_CTE' => ['foo' => 'bar']],
-            ['TL_CTE' => ['foo' => 'baz']],
-            ['TL_CTE' => ['foo' => 'baz']],
+        yield 'globals overrides fragment with priority 0' => [
+            ['texts' => ['headline' => 'LegacyHeadline']],
+            [['texts' => ['headline' => 'HeadlineFragment']]],
+            ['texts' => ['headline' => 'LegacyHeadline']],
         ];
 
-        yield [
-            ['TL_CTE' => ['foo' => 'bar']],
-            ['TL_CTE' => ['foo' => 'baz', 'bar' => 'baz']],
-            ['TL_CTE' => ['foo' => 'baz', 'bar' => 'baz']],
+        yield 'priority > 0 overrides globals' => [
+            ['texts' => ['headline' => 'LegacyHeadline']],
+            [1 => ['texts' => ['headline' => 'HeadlineFragment']]],
+            ['texts' => ['headline' => 'HeadlineFragment']],
         ];
     }
 }

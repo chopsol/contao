@@ -24,21 +24,20 @@ class SearchIndexerPass implements CompilerPassInterface
 {
     use PriorityTaggedServiceTrait;
 
-    private const DELEGATING_SERVICE_ID = 'contao.search.indexer.delegating';
+    private const DELEGATING_SERVICE_ID = 'contao.search.delegating_indexer';
 
     public function process(ContainerBuilder $container): void
     {
         $indexers = $this->findAndSortTaggedServices('contao.search_indexer', $container);
 
-        // Make sure we do not add the delegating indexer to itself to prevent endless redirects
+        // Make sure we do not add the delegating indexer to itself to prevent
+        // endless redirects
         $indexers = array_filter(
             $indexers,
-            static function (Reference $reference): bool {
-                return self::DELEGATING_SERVICE_ID !== (string) $reference;
-            }
+            static fn (Reference $reference): bool => self::DELEGATING_SERVICE_ID !== (string) $reference,
         );
 
-        if (!$container->hasDefinition(self::DELEGATING_SERVICE_ID) || 0 === \count($indexers)) {
+        if (!$indexers || !$container->hasDefinition(self::DELEGATING_SERVICE_ID)) {
             // Remove delegating indexer
             $container->removeDefinition(self::DELEGATING_SERVICE_ID);
 
@@ -46,7 +45,7 @@ class SearchIndexerPass implements CompilerPassInterface
             $container->removeDefinition('contao.listener.search_index');
 
             // Remove search index crawl subscriber
-            $container->removeDefinition('contao.crawl.escargot_subscriber.search_index');
+            $container->removeDefinition('contao.crawl.escargot.search_index_subscriber');
 
             return;
         }

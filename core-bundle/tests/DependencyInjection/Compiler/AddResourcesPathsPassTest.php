@@ -18,16 +18,10 @@ use Contao\CoreBundle\Tests\TestCase;
 use Contao\NewBundle\ContaoNewBundle;
 use Contao\TestBundle\ContaoTestBundle;
 use Symfony\Bundle\FrameworkBundle\FrameworkBundle;
-use Webmozart\PathUtil\Path;
+use Symfony\Component\Filesystem\Path;
 
 class AddResourcesPathsPassTest extends TestCase
 {
-    /**
-     * @group legacy
-     *
-     * @expectedDeprecation Since contao/core-bundle 4.9: Using "app/Resources/contao" has been deprecated %s.
-     * @expectedDeprecation Since contao/core-bundle 4.9: Using "src/Resources/contao" has been deprecated %s.
-     */
     public function testAddsTheResourcesPaths(): void
     {
         $fixturesDir = Path::normalize($this->getFixturesDir());
@@ -60,14 +54,12 @@ class AddResourcesPathsPassTest extends TestCase
 
         $this->assertSame(
             [
-                $testPath.'/Resources/contao',
-                $newPath.'/contao',
-                $fixturesDir.'/system/modules/foobar',
-                $fixturesDir.'/contao',
-                $fixturesDir.'/app/Resources/contao',
-                $fixturesDir.'/src/Resources/contao',
+                'ContaoTestBundle' => $testPath.'/Resources/contao',
+                'ContaoNewBundle' => $newPath.'/contao',
+                'foobar' => $fixturesDir.'/system/modules/foobar',
+                'App' => $fixturesDir.'/contao',
             ],
-            $container->getParameter('contao.resources_paths')
+            $container->getParameter('contao.resources_paths'),
         );
     }
 }

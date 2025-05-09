@@ -16,34 +16,15 @@ use Symfony\Contracts\EventDispatcher\Event;
 
 class PreviewUrlCreateEvent extends Event
 {
-    /**
-     * @var string
-     */
-    private $key;
+    private string|null $query = null;
 
-    /**
-     * @var int
-     */
-    private $id;
-
-    /**
-     * @var string
-     */
-    private $query;
-
-    /**
-     * @param string|int $id
-     */
-    public function __construct(string $key, $id)
-    {
-        $this->key = $key;
-        $this->id = $id;
+    public function __construct(
+        private readonly string $key,
+        private readonly int|string $id,
+    ) {
     }
 
-    /**
-     * @return string|int
-     */
-    public function getId()
+    public function getId(): int|string
     {
         return $this->id;
     }
@@ -53,7 +34,7 @@ class PreviewUrlCreateEvent extends Event
         return $this->key;
     }
 
-    public function getQuery(): ?string
+    public function getQuery(): string|null
     {
         return $this->query;
     }

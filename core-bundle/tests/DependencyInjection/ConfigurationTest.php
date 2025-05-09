@@ -15,24 +15,22 @@ namespace Contao\CoreBundle\Tests\DependencyInjection;
 use Contao\CoreBundle\DependencyInjection\Configuration;
 use Contao\CoreBundle\Tests\TestCase;
 use Contao\Image\ResizeConfiguration;
+use Imagine\Image\ImageInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Config\Definition\ArrayNode;
-use Symfony\Component\Config\Definition\BaseNode;
 use Symfony\Component\Config\Definition\Exception\InvalidConfigurationException;
 use Symfony\Component\Config\Definition\Processor;
 use Symfony\Component\Config\Definition\PrototypedArrayNode;
 
 class ConfigurationTest extends TestCase
 {
-    /**
-     * @var Configuration
-     */
-    private $configuration;
+    private Configuration $configuration;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->configuration = new Configuration($this->getTempDir(), 'en');
+        $this->configuration = new Configuration();
     }
 
     public function testAddsTheImagineService(): void
@@ -43,7 +41,7 @@ class ConfigurationTest extends TestCase
         $this->assertNull($configuration['image']['imagine_service']);
 
         $params = [
-            'contao' => [
+            [
                 'image' => [
                     'imagine_service' => 'my_super_service',
                 ],
@@ -55,14 +53,77 @@ class ConfigurationTest extends TestCase
         $this->assertSame('my_super_service', $configuration['image']['imagine_service']);
     }
 
-    /**
-     * @dataProvider getPaths
-     */
-    public function testResolvesThePaths(string $unix, string $windows): void
+    public function testInvalidImageExtension(): void
     {
         $params = [
             'contao' => [
-                'web_dir' => $unix,
+                'image' => [
+                    'valid_extensions' => ['', '+', '-'],
+                ],
+            ],
+        ];
+
+        $this->expectException(InvalidConfigurationException::class);
+
+        (new Processor())->processConfiguration($this->configuration, $params);
+    }
+
+    public function testReplacesAllImageExtensions(): void
+    {
+        $extensions = ['jpeg', 'jpg', 'png'];
+
+        $params = [
+            'contao' => [
+                'image' => [
+                    'valid_extensions' => $extensions,
+                ],
+            ],
+        ];
+
+        $configuration = (new Processor())->processConfiguration($this->configuration, $params);
+
+        $this->assertSame($extensions, $configuration['image']['valid_extensions']);
+    }
+
+    public function testAddsImageExtension(): void
+    {
+        $extensions = ['avif', 'bmp', 'gif', 'heic', 'jpeg', 'jpg', 'png', 'svg', 'svgz', 'tif', 'tiff', 'webp'];
+
+        $params = [
+            'contao' => [
+                'image' => [
+                    'valid_extensions' => ['+heic'],
+                ],
+            ],
+        ];
+
+        $configuration = (new Processor())->processConfiguration($this->configuration, $params);
+
+        $this->assertSame($extensions, $configuration['image']['valid_extensions']);
+    }
+
+    public function testRemovesImageExtension(): void
+    {
+        $extensions = ['avif', 'bmp', 'gif', 'jpeg', 'jpg', 'png', 'tif', 'tiff', 'webp'];
+
+        $params = [
+            'contao' => [
+                'image' => [
+                    'valid_extensions' => ['-svg', '-svgz'],
+                ],
+            ],
+        ];
+
+        $configuration = (new Processor())->processConfiguration($this->configuration, $params);
+
+        $this->assertSame($extensions, $configuration['image']['valid_extensions']);
+    }
+
+    #[DataProvider('getPaths')]
+    public function testResolvesThePaths(string $unix, string $windows): void
+    {
+        $params = [
+            [
                 'image' => [
                     'target_dir' => $windows,
                 ],
@@ -71,11 +132,10 @@ class ConfigurationTest extends TestCase
 
         $configuration = (new Processor())->processConfiguration($this->configuration, $params);
 
-        $this->assertSame('/tmp/contao', $configuration['web_dir']);
         $this->assertSame('C:/Temp/contao', $configuration['image']['target_dir']);
     }
 
-    public function getPaths(): \Generator
+    public static function getPaths(): iterable
     {
         yield ['/tmp/contao', 'C:\Temp\contao'];
         yield ['/tmp/foo/../contao', 'C:\Temp\foo\..\contao'];
@@ -87,14 +147,11 @@ class ConfigurationTest extends TestCase
         yield ['/tmp/contao/foo/..', 'C:\Temp\contao\foo\..'];
     }
 
-    /**
-     * @dataProvider getInvalidUploadPaths
-     */
+    #[DataProvider('getInvalidUploadPaths')]
     public function testFailsIfTheUploadPathIsInvalid(string $uploadPath): void
     {
         $params = [
-            'contao' => [
-                'encryption_key' => 's3cr3t',
+            [
                 'upload_path' => $uploadPath,
             ],
         ];
@@ -104,7 +161,7 @@ class ConfigurationTest extends TestCase
         (new Processor())->processConfiguration($this->configuration, $params);
     }
 
-    public function getInvalidUploadPaths(): \Generator
+    public static function getInvalidUploadPaths(): iterable
     {
         yield [''];
         yield ['app'];
@@ -113,6 +170,7 @@ class ConfigurationTest extends TestCase
         yield ['config'];
         yield ['contao'];
         yield ['plugins'];
+        yield ['public'];
         yield ['share'];
         yield ['system'];
         yield ['templates'];
@@ -124,7 +182,7 @@ class ConfigurationTest extends TestCase
     public function testFailsIfAPredefinedImageSizeNameContainsOnlyDigits(): void
     {
         $params = [
-            'contao' => [
+            [
                 'image' => [
                     'sizes' => [
                         '123' => ['width' => 100, 'height' => 200],
@@ -139,13 +197,11 @@ class ConfigurationTest extends TestCase
         (new Processor())->processConfiguration($this->configuration, $params);
     }
 
-    /**
-     * @dataProvider getReservedImageSizeNames
-     */
+    #[DataProvider('getReservedImageSizeNames')]
     public function testFailsIfAPredefinedImageSizeNameIsReserved(string $name): void
     {
         $params = [
-            'contao' => [
+            [
                 'image' => [
                     'sizes' => [
                         $name => ['width' => 100, 'height' => 200],
@@ -160,7 +216,7 @@ class ConfigurationTest extends TestCase
         (new Processor())->processConfiguration($this->configuration, $params);
     }
 
-    public function getReservedImageSizeNames(): \Generator
+    public static function getReservedImageSizeNames(): iterable
     {
         yield [ResizeConfiguration::MODE_BOX];
         yield [ResizeConfiguration::MODE_PROPORTIONAL];
@@ -179,7 +235,7 @@ class ConfigurationTest extends TestCase
     public function testDeniesInvalidCrawlUris(): void
     {
         $params = [
-            'contao' => [
+            [
                 'crawl' => [
                     'additional_uris' => ['invalid.com'],
                 ],
@@ -194,12 +250,305 @@ class ConfigurationTest extends TestCase
 
     public function testAllowsOnlySnakeCaseKeys(): void
     {
-        /** @var ArrayNode $tree */
         $tree = $this->configuration->getConfigTreeBuilder()->buildTree();
 
         $this->assertInstanceOf(ArrayNode::class, $tree);
 
         $this->checkKeys($tree->getChildren());
+    }
+
+    public function testFailsIfABackendAttributeNameContainsInvalidCharacters(): void
+    {
+        $params = [
+            [
+                'backend' => [
+                    'attributes' => [
+                        'data-App Name' => 'My App',
+                    ],
+                ],
+            ],
+        ];
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessageMatches('/The attribute name "data-App Name" must be a valid HTML attribute name./');
+
+        (new Processor())->processConfiguration($this->configuration, $params);
+    }
+
+    public function testFailsOnInvalidBackupKeepIntervals(): void
+    {
+        $params = [
+            [
+                'backup' => [
+                    'keep_intervals' => [
+                        'foobar',
+                    ],
+                ],
+            ],
+        ];
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Invalid configuration for path "contao.backup.keep_intervals": ["foobar"]');
+
+        (new Processor())->processConfiguration($this->configuration, $params);
+    }
+
+    public function testMessengerConfiguration(): void
+    {
+        $params = [
+            // This first configuration should be overridden by the latter (no deep merging),
+            // in order to control all the workers in your app.
+            [
+                'messenger' => [
+                    'workers' => [
+                        [
+                            'transports' => ['prio_low'],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                'messenger' => [
+                    'workers' => [
+                        [
+                            'transports' => ['prio_low'],
+                        ],
+                        [
+                            'transports' => ['prio_normal'],
+                            'options' => ['--sleep=10', '--time-limit=60'],
+                            'autoscale' => [
+                                'desired_size' => 10,
+                                'max' => 20,
+                            ],
+                        ],
+                        [
+                            'transports' => ['prio_high'],
+                            'options' => ['--sleep=5', '--time-limit=60'],
+                            'autoscale' => [
+                                'desired_size' => 5,
+                                'max' => 30,
+                                'min' => 4,
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $configuration = (new Processor())->processConfiguration($this->configuration, $params);
+
+        $this->assertSame(
+            [
+                'workers' => [
+                    [
+                        'transports' => ['prio_low'],
+                        'options' => ['--time-limit=60'],
+                        'autoscale' => [
+                            'enabled' => false,
+                            'min' => 1,
+                        ],
+                    ],
+                    [
+                        'transports' => ['prio_normal'],
+                        'options' => ['--sleep=10', '--time-limit=60'],
+                        'autoscale' => [
+                            'desired_size' => 10,
+                            'max' => 20,
+                            'enabled' => true,
+                            'min' => 1,
+                        ],
+                    ],
+                    [
+                        'transports' => ['prio_high'],
+                        'options' => ['--sleep=5', '--time-limit=60'],
+                        'autoscale' => [
+                            'desired_size' => 5,
+                            'max' => 30,
+                            'min' => 4,
+                            'enabled' => true,
+                        ],
+                    ],
+                ],
+                'web_worker' => [
+                    'transports' => [],
+                    'grace_period' => 'PT10M',
+                ],
+            ],
+            $configuration['messenger'],
+        );
+
+        try {
+            (new Processor())->processConfiguration($this->configuration, [
+                [
+                    'messenger' => [
+                        'workers' => [
+                            [
+                                'transports' => ['prio_normal'],
+                                'options' => ['--sleep=10', '--time-limit=60'],
+                                'autoscale' => [
+                                    'enabled' => true,
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ]);
+        } catch (InvalidConfigurationException $exception) {
+            $this->assertStringContainsString(
+                'The child config "desired_size" under "contao.messenger.workers.0.autoscale" must be configured',
+                $exception->getMessage(),
+            );
+        }
+
+        try {
+            (new Processor())->processConfiguration($this->configuration, [
+                [
+                    'messenger' => [
+                        'workers' => [
+                            [
+                                'transports' => ['prio_normal'],
+                                'options' => ['--sleep=10', '--time-limit=60'],
+                                'autoscale' => [
+                                    'enabled' => true,
+                                    'desired_size' => 10,
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ]);
+        } catch (InvalidConfigurationException $exception) {
+            $this->assertStringContainsString(
+                'The child config "max" under "contao.messenger.workers.0.autoscale" must be configured',
+                $exception->getMessage(),
+            );
+        }
+    }
+
+    public function testFailsOnInvalidWebWorkerGracePeriod(): void
+    {
+        $params = [
+            [
+                'messenger' => [
+                    'web_worker' => [
+                        'grace_period' => 'nonsense',
+                    ],
+                ],
+            ],
+        ];
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('Invalid configuration for path "contao.messenger.web_worker.grace_period": Must be a valid string for \DateInterval(). "nonsense" given.');
+
+        (new Processor())->processConfiguration($this->configuration, $params);
+    }
+
+    #[DataProvider('invalidAllowedInlineStylesRegexProvider')]
+    public function testFailsOnInvalidAllowedInlineStylesRegex(string $regex, string $exceptionMessage): void
+    {
+        $params = [
+            [
+                'csp' => [
+                    'allowed_inline_styles' => [
+                        'text-decoration' => $regex,
+                    ],
+                ],
+            ],
+        ];
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage($exceptionMessage);
+
+        (new Processor())->processConfiguration($this->configuration, $params);
+    }
+
+    public static function invalidAllowedInlineStylesRegexProvider(): iterable
+    {
+        yield [
+            'te(st',
+            'Invalid configuration for path "contao.csp.allowed_inline_styles": The regex "te(st" for property "text-decoration" is invalid.',
+        ];
+
+        yield [
+            'te.*st',
+            'Invalid configuration for path "contao.csp.allowed_inline_styles": The regex "te.*st" for property "text-decoration" contains ".*" which is not allowed due to security reasons.',
+        ];
+    }
+
+    #[DataProvider('cronConfigurationProvider')]
+    public function testValidCronConfiguration(array $params, bool|string $expected): void
+    {
+        $configuration = (new Processor())->processConfiguration($this->configuration, $params);
+
+        $this->assertSame($expected, $configuration['cron']['web_listener']);
+    }
+
+    public function testInvalidCronConfiguration(): void
+    {
+        $params = [
+            [
+                'cron' => [
+                    'web_listener' => 'foobar',
+                ],
+            ],
+        ];
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('The value "foobar" is not allowed for path "contao.cron.web_listener". Permissible values: "auto", true, false');
+
+        (new Processor())->processConfiguration($this->configuration, $params);
+    }
+
+    public static function cronConfigurationProvider(): iterable
+    {
+        yield 'Default value' => [
+            [], 'auto',
+        ];
+
+        yield 'Explicit auto' => [
+            [['cron' => ['web_listener' => 'auto']]], 'auto',
+        ];
+
+        yield 'Explicit false' => [
+            [['cron' => ['web_listener' => false]]], false,
+        ];
+
+        yield 'Explicit true' => [
+            [['cron' => ['web_listener' => true]]], true,
+        ];
+    }
+
+    public function testDoesNormalizeResamplingFilter(): void
+    {
+        $params = [
+            [
+                'image' => [
+                    'imagine_options' => [
+                        'resampling-filter' => ImageInterface::FILTER_LANCZOS,
+                    ],
+                ],
+            ],
+        ];
+
+        $configuration = (new Processor())->processConfiguration($this->configuration, $params);
+
+        $this->assertArrayHasKey('resampling-filter', $configuration['image']['imagine_options']);
+        $this->assertSame(ImageInterface::FILTER_LANCZOS, $configuration['image']['imagine_options']['resampling-filter']);
+
+        $params = [
+            [
+                'image' => [
+                    'imagine_options' => [
+                        'resampling_filter' => ImageInterface::FILTER_UNDEFINED,
+                    ],
+                ],
+            ],
+        ];
+
+        $configuration = (new Processor())->processConfiguration($this->configuration, $params);
+
+        $this->assertArrayHasKey('resampling-filter', $configuration['image']['imagine_options']);
+        $this->assertSame(ImageInterface::FILTER_UNDEFINED, $configuration['image']['imagine_options']['resampling-filter']);
     }
 
     /**
@@ -208,19 +557,21 @@ class ConfigurationTest extends TestCase
      */
     private function checkKeys(array $configuration): void
     {
-        /** @var BaseNode $value */
         foreach ($configuration as $key => $value) {
             if ($value instanceof ArrayNode) {
                 $this->checkKeys($value->getChildren());
             }
 
-            /** @var ArrayNode $prototype */
-            if ($value instanceof PrototypedArrayNode && ($prototype = $value->getPrototype()) instanceof ArrayNode) {
-                $this->checkKeys($prototype->getChildren());
+            if ($value instanceof PrototypedArrayNode) {
+                $prototype = $value->getPrototype();
+
+                if ($prototype instanceof ArrayNode) {
+                    $this->checkKeys($prototype->getChildren());
+                }
             }
 
-            if (\is_string($key) && !$value->isDeprecated()) {
-                $this->assertRegExp('/^[a-z][a-z_]+[a-z]$/', $key);
+            if (\is_string($key) && !$value->isDeprecated() && 'resampling-filter' !== $key) {
+                $this->assertMatchesRegularExpression('/^[a-z][a-z_]+[a-z]$/', $key);
             }
         }
     }

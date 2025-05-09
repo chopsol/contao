@@ -14,23 +14,33 @@ namespace Contao\CoreBundle\EventListener;
 
 use Contao\ArticleModel;
 use Contao\CoreBundle\Event\PreviewUrlConvertEvent;
+use Contao\CoreBundle\Exception\RouteParametersException;
 use Contao\CoreBundle\Framework\ContaoFramework;
+use Contao\CoreBundle\Routing\ContentUrlGenerator;
+use Contao\CoreBundle\Routing\Page\PageRegistry;
+use Contao\CoreBundle\Routing\Page\PageRoute;
 use Contao\PageModel;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\UriSigner;
+use Symfony\Component\HttpKernel\Controller\ControllerReference;
+use Symfony\Component\HttpKernel\Fragment\FragmentUriGenerator;
+use Symfony\Component\Routing\Exception\ExceptionInterface;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 
 /**
  * @internal
  */
+#[AsEventListener]
 class PreviewUrlConvertListener
 {
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    public function __construct(ContaoFramework $framework)
-    {
-        $this->framework = $framework;
+    public function __construct(
+        private readonly ContaoFramework $framework,
+        private readonly PageRegistry $pageRegistry,
+        private readonly ContentUrlGenerator $urlGenerator,
+        private readonly UriSigner $signer,
+        private readonly string $fragmentPath = '/_fragment',
+    ) {
     }
 
     public function __invoke(PreviewUrlConvertEvent $event): void
@@ -47,32 +57,52 @@ class PreviewUrlConvertListener
             return;
         }
 
+        if ($request->query->has('article')) {
+            $articleAdapter = $this->framework->getAdapter(ArticleModel::class);
+            $article = $articleAdapter->findByIdOrAliasAndPid($request->query->get('article'), $request->query->getInt('page'));
+
+            if ($article) {
+                try {
+                    $event->setUrl($this->urlGenerator->generate($article, [], UrlGeneratorInterface::ABSOLUTE_URL));
+
+                    return;
+                } catch (ExceptionInterface) {
+                }
+            }
+        }
+
         if ($request->query->has('page')) {
-            /** @var PageModel $pageAdapter */
             $pageAdapter = $this->framework->getAdapter(PageModel::class);
 
             if (!$page = $pageAdapter->findWithDetails($request->query->get('page'))) {
                 return;
             }
 
-            $event->setUrl($page->getPreviewUrl($this->getParams($request)));
+            try {
+                $event->setUrl($this->urlGenerator->generate($page, [], UrlGeneratorInterface::ABSOLUTE_URL));
+            } catch (RouteParametersException $e) {
+                $route = $e->getRoute();
+
+                if (!$route instanceof PageRoute || !$route->getPageModel()->requireItem) {
+                    $event->setUrl($this->getFragmentUrl($request, $page));
+                }
+
+                // Ignore the exception and set no URL for pages with requireItem (see #3525)
+            } catch (ExceptionInterface) {
+                $event->setUrl($this->getFragmentUrl($request, $page));
+            }
         }
     }
 
-    private function getParams(Request $request): ?string
+    private function getFragmentUrl(Request $request, PageModel $pageModel): string
     {
-        if (!$request->query->has('article')) {
-            return null;
-        }
+        $route = $this->pageRegistry->getRoute($pageModel);
 
-        /** @var ArticleModel $articleAdapter */
-        $articleAdapter = $this->framework->getAdapter(ArticleModel::class);
+        $defaults = $route->getDefaults();
+        $defaults['pageModel'] = $pageModel->id;
 
-        if (!$article = $articleAdapter->findByAlias($request->query->get('article'))) {
-            return null;
-        }
+        $uri = new ControllerReference($defaults['_controller'], $defaults);
 
-        // Add the /article/ fragment (see contao/core-bundle#673)
-        return sprintf('/articles/%s%s', 'main' !== $article->inColumn ? $article->inColumn.':' : '', $article->alias);
+        return (new FragmentUriGenerator($this->fragmentPath, $this->signer))->generate($uri, $request, true);
     }
 }

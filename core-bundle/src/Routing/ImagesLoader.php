@@ -14,26 +14,23 @@ namespace Contao\CoreBundle\Routing;
 
 use Contao\CoreBundle\Controller\ImagesController;
 use Symfony\Component\Config\Loader\Loader;
+use Symfony\Component\Filesystem\Path;
 use Symfony\Component\Routing\Route;
 use Symfony\Component\Routing\RouteCollection;
-use Webmozart\PathUtil\Path;
 
 class ImagesLoader extends Loader
 {
-    /**
-     * @var string
-     */
-    private $pathPrefix;
+    private readonly string $pathPrefix;
 
     /**
-     * @internal Do not inherit from this class; decorate the "contao.routing.images_loader" service instead
+     * @internal
      */
     public function __construct(string $projectDir, string $imageTargetDir)
     {
         $this->pathPrefix = Path::makeRelative($imageTargetDir, $projectDir);
     }
 
-    public function load($resource, $type = null): RouteCollection
+    public function load(mixed $resource, string|null $type = null): RouteCollection
     {
         $route = new Route(
             '/'.$this->pathPrefix.'/{path}',
@@ -41,7 +38,7 @@ class ImagesLoader extends Loader
                 '_controller' => ImagesController::class,
                 '_bypass_maintenance' => true,
             ],
-            ['path' => '.+']
+            ['path' => '.+'],
         );
 
         $routes = new RouteCollection();
@@ -50,7 +47,7 @@ class ImagesLoader extends Loader
         return $routes;
     }
 
-    public function supports($resource, $type = null): bool
+    public function supports($resource, string|null $type = null): bool
     {
         return 'contao_images' === $type;
     }

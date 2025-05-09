@@ -13,7 +13,9 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Tests\Controller\FrontendModule;
 
 use Contao\BackendUser;
+use Contao\CoreBundle\Cache\CacheTagManager;
 use Contao\CoreBundle\Controller\FrontendModule\TwoFactorController;
+use Contao\CoreBundle\Routing\ContentUrlGenerator;
 use Contao\CoreBundle\Security\TwoFactor\Authenticator;
 use Contao\CoreBundle\Security\TwoFactor\BackupCodeManager;
 use Contao\CoreBundle\Security\TwoFactor\TrustedDeviceManager;
@@ -29,131 +31,157 @@ use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Security\Core\Authentication\Token\PreAuthenticatedToken;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
+use Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface;
 use Symfony\Component\Security\Core\Exception\AuthenticationException;
-use Symfony\Component\Security\Core\Security;
 use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationUtils;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
 class TwoFactorControllerTest extends TestCase
 {
-    protected function setUp(): void
+    protected function tearDown(): void
     {
-        parent::setUp();
+        $this->resetStaticProperties([System::class]);
 
-        System::setContainer($this->getContainerWithContaoConfiguration());
+        parent::tearDown();
+    }
+
+    public function testReturnsIfTheUserIsNotAFrontendUser(): void
+    {
+        $container = $this->getContainerWithFrameworkTemplate(
+            $this->mockAuthenticator(),
+            $this->mockAuthenticationUtils(),
+            $this->createMock(BackendUser::class),
+            true,
+        );
+
+        $controller = new TwoFactorController();
+        $controller->setContainer($container);
+
+        $module = $this->mockClassWithProperties(ModuleModel::class);
+        $page = $this->mockPageModel();
+
+        $request = new Request();
+        $request->attributes->set('pageModel', $page);
+
+        $response = $controller($request, $module, 'main');
+
+        $this->assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode());
+    }
+
+    public function testReturnsIfTheRequestHasNoPageModel(): void
+    {
+        $container = $this->getContainerWithFrameworkTemplate(
+            $this->mockAuthenticator(),
+            $this->mockAuthenticationUtils(),
+            $this->createMock(BackendUser::class),
+            true,
+        );
+
+        $controller = new TwoFactorController();
+        $controller->setContainer($container);
+
+        $module = $this->mockClassWithProperties(ModuleModel::class);
+        $request = new Request();
+
+        $response = $controller($request, $module, 'main');
+
+        $this->assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode());
     }
 
     public function testReturnsEmptyResponseIfTheUserIsNotFullyAuthenticated(): void
     {
         $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
             $this->mockAuthenticator(),
             $this->mockAuthenticationUtils(),
-            $this->mockSecurityHelper()
         );
 
         $controller = new TwoFactorController();
         $controller->setContainer($container);
 
-        $module = $this->createMock(ModuleModel::class);
+        $module = $this->mockClassWithProperties(ModuleModel::class);
         $page = $this->mockPageModel();
 
-        $response = $controller(new Request(), $module, 'main', null, $page);
+        $request = new Request();
+        $request->attributes->set('pageModel', $page);
+
+        $response = $controller($request, $module, 'main');
 
         $this->assertEmpty($response->getContent());
         $this->assertSame(204, $response->getStatusCode());
     }
 
-    public function testReturnsIfTheUserIsNotAFrontendUser(): void
-    {
-        $user = $this->createMock(BackendUser::class);
-
-        $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
-            $this->mockAuthenticator(),
-            $this->mockAuthenticationUtils(),
-            $this->mockSecurityHelper($user, true)
-        );
-
-        $controller = new TwoFactorController();
-        $controller->setContainer($container);
-
-        $module = $this->createMock(ModuleModel::class);
-        $page = $this->mockPageModel();
-
-        $response = $controller(new Request(), $module, 'main', null, $page);
-
-        $this->assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode());
-    }
-
     public function testReturnsAResponseIfTheUserIsAFrontendUser(): void
     {
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->secret = '';
-        $user->useTwoFactor = '1';
+        $user->useTwoFactor = true;
 
         $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
             $this->mockAuthenticator(),
             $this->mockAuthenticationUtils(),
-            $this->mockSecurityHelper($user, true)
+            $user,
+            true,
         );
 
         $controller = new TwoFactorController();
         $controller->setContainer($container);
 
-        $module = $this->createMock(ModuleModel::class);
+        $module = $this->mockClassWithProperties(ModuleModel::class);
 
         $page = $this->mockPageModel();
-        $page->enforceTwoFactor = '1';
+        $page->enforceTwoFactor = true;
 
-        $response = $controller(new Request(), $module, 'main', null, $page);
+        $request = new Request();
+        $request->attributes->set('pageModel', $page);
+
+        $response = $controller($request, $module, 'main');
 
         $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
     }
 
     public function testReturnsIfTwoFactorAuthenticationIsAlreadyDisabled(): void
     {
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->secret = '';
-        $user->useTwoFactor = '';
+        $user->useTwoFactor = false;
 
         $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
             $this->mockAuthenticator(),
             $this->mockAuthenticationUtils(),
-            $this->mockSecurityHelper($user, true)
+            $user,
+            true,
         );
 
         $controller = new TwoFactorController();
         $controller->setContainer($container);
 
-        $request = new Request();
-        $request->request->set('FORM_SUBMIT', 'tl_two_factor_disable');
-
-        $module = $this->createMock(ModuleModel::class);
+        $module = $this->mockClassWithProperties(ModuleModel::class);
         $page = $this->mockPageModel();
 
-        $response = $controller($request, $module, 'main', null, $page);
+        $request = new Request();
+        $request->attributes->set('pageModel', $page);
+        $request->request->set('FORM_SUBMIT', 'tl_two_factor_disable');
+
+        $response = $controller($request, $module, 'main');
 
         $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
     }
 
     public function testRedirectsAfterTwoFactorHasBeenDisabled(): void
     {
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->secret = '';
-        $user->useTwoFactor = '1';
+        $user->useTwoFactor = true;
 
         $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
             $this->mockAuthenticator(),
             $this->mockAuthenticationUtils(),
-            $this->mockSecurityHelper($user, true)
+            $user,
+            true,
         );
 
         $trustedDeviceManager = $this->createMock(TrustedDeviceManager::class);
@@ -168,132 +196,137 @@ class TwoFactorControllerTest extends TestCase
         $controller = new TwoFactorController();
         $controller->setContainer($container);
 
+        $module = $this->mockClassWithProperties(ModuleModel::class);
+        $page = $this->mockPageModel();
+
         $request = new Request();
+        $request->attributes->set('pageModel', $page);
         $request->request->set('FORM_SUBMIT', 'tl_two_factor_disable');
 
-        $module = $this->createMock(ModuleModel::class);
-
-        $page = $this->mockPageModel();
-        $page
+        $container
+            ->get('contao.routing.content_url_generator')
             ->expects($this->exactly(2))
-            ->method('getAbsoluteUrl')
+            ->method('generate')
             ->willReturn('https://localhost.wip/foobar')
         ;
 
-        /** @var RedirectResponse $response */
-        $response = $controller($request, $module, 'main', null, $page);
+        $response = $controller($request, $module, 'main');
 
         $this->assertNull($user->backupCodes);
-        $this->assertSame('', $user->useTwoFactor);
+        $this->assertFalse($user->useTwoFactor);
         $this->assertInstanceOf(RedirectResponse::class, $response);
         $this->assertSame('https://localhost.wip/foobar', $response->getTargetUrl());
     }
 
     public function testReturnsIfTwoFactorAuthenticationIsAlreadyEnabled(): void
     {
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->secret = '';
-        $user->useTwoFactor = '1';
+        $user->useTwoFactor = true;
 
         $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
             $this->mockAuthenticator(),
             $this->mockAuthenticationUtils(),
-            $this->mockSecurityHelper($user, true)
+            $user,
+            true,
         );
 
         $controller = new TwoFactorController();
         $controller->setContainer($container);
 
+        $module = $this->mockClassWithProperties(ModuleModel::class);
+        $page = $this->mockPageModel();
+
         $request = new Request();
+        $request->attributes->set('pageModel', $page);
         $request->request->set('2fa', 'enable');
 
-        $module = $this->createMock(ModuleModel::class);
-
-        $page = $this->mockPageModel();
-        $page
-            ->method('getAbsoluteUrl')
+        $container
+            ->get('contao.routing.content_url_generator')
+            ->method('generate')
             ->willReturn('https://localhost.wip/foobar')
         ;
 
-        $response = $controller($request, $module, 'main', null, $page);
+        $response = $controller($request, $module, 'main');
 
         $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
     }
 
     public function testFailsIfTheTwoFactorCodeIsInvalid(): void
     {
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->secret = '';
-        $user->useTwoFactor = '';
+        $user->useTwoFactor = false;
 
         $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
             $this->mockAuthenticator(),
             $this->mockAuthenticationUtils(new InvalidTwoFactorCodeException()),
-            $this->mockSecurityHelper($user, true)
+            $user,
+            true,
         );
 
         $controller = new TwoFactorController();
         $controller->setContainer($container);
 
+        $module = $this->mockClassWithProperties(ModuleModel::class);
+        $page = $this->mockPageModel();
+
         $request = new Request();
+        $request->attributes->set('pageModel', $page);
         $request->request->set('2fa', 'enable');
 
-        $module = $this->createMock(ModuleModel::class);
-
-        $page = $this->mockPageModel();
-        $page
+        $container
+            ->get('contao.routing.content_url_generator')
             ->expects($this->exactly(2))
-            ->method('getAbsoluteUrl')
+            ->method('generate')
+            ->with($page, [], UrlGeneratorInterface::ABSOLUTE_URL)
             ->willReturn('https://localhost.wip/foobar')
         ;
 
-        $controller($request, $module, 'main', null, $page);
+        $controller($request, $module, 'main');
     }
 
     public function testDoesNotRedirectIfTheTwoFactorCodeIsInvalid(): void
     {
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->secret = '';
-        $user->useTwoFactor = '';
+        $user->useTwoFactor = false;
 
         $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
             $this->mockAuthenticator($user, false),
             $this->mockAuthenticationUtils(),
-            $this->mockSecurityHelper($user, true)
+            $user,
+            true,
         );
 
         $controller = new TwoFactorController();
         $controller->setContainer($container);
 
+        $module = $this->mockClassWithProperties(ModuleModel::class);
+        $page = $this->mockPageModel();
+
         $request = new Request();
+        $request->attributes->set('pageModel', $page);
         $request->request->set('2fa', 'enable');
         $request->request->set('FORM_SUBMIT', 'tl_two_factor');
         $request->request->set('verify', '123456');
 
-        $module = $this->createMock(ModuleModel::class);
-
-        $page = $this->mockPageModel();
-        $page
+        $container
+            ->get('contao.routing.content_url_generator')
             ->expects($this->exactly(2))
-            ->method('getAbsoluteUrl')
+            ->method('generate')
+            ->with($page, [], UrlGeneratorInterface::ABSOLUTE_URL)
             ->willReturn('https://localhost.wip/foobar')
         ;
 
-        $controller($request, $module, 'main', null, $page);
+        $controller($request, $module, 'main');
     }
 
     public function testRedirectsIfTheTwoFactorCodeIsValid(): void
     {
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->secret = '';
-        $user->useTwoFactor = '';
+        $user->useTwoFactor = false;
 
         $user
             ->expects($this->once())
@@ -301,79 +334,79 @@ class TwoFactorControllerTest extends TestCase
         ;
 
         $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
             $this->mockAuthenticator($user, true),
             $this->mockAuthenticationUtils(),
-            $this->mockSecurityHelper($user, true)
+            $user,
+            true,
         );
 
         $controller = new TwoFactorController();
         $controller->setContainer($container);
 
+        $module = $this->mockClassWithProperties(ModuleModel::class);
+        $page = $this->mockPageModel();
+
         $request = new Request();
+        $request->attributes->set('pageModel', $page);
         $request->request->set('2fa', 'enable');
         $request->request->set('FORM_SUBMIT', 'tl_two_factor');
         $request->request->set('verify', '123456');
 
-        $module = $this->createMock(ModuleModel::class);
-
-        $page = $this->mockPageModel();
-        $page
+        $container
+            ->get('contao.routing.content_url_generator')
             ->expects($this->once())
-            ->method('getAbsoluteUrl')
+            ->method('generate')
+            ->with($page, [], UrlGeneratorInterface::ABSOLUTE_URL)
             ->willReturn('https://localhost.wip/foobar')
         ;
 
-        $response = $controller($request, $module, 'main', null, $page);
+        $response = $controller($request, $module, 'main');
 
         $this->assertInstanceOf(RedirectResponse::class, $response);
     }
 
     public function testShowsTheBackupCodes(): void
     {
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->secret = '';
-        $user->useTwoFactor = '1';
+        $user->useTwoFactor = true;
 
         $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
             $this->mockAuthenticator(),
             $this->mockAuthenticationUtils(),
-            $this->mockSecurityHelper($user, true)
+            $user,
+            true,
         );
 
         $controller = new TwoFactorController();
         $controller->setContainer($container);
 
-        $request = new Request();
-        $request->request->set('FORM_SUBMIT', 'tl_two_factor_show_backup_codes');
-
-        $module = $this->createMock(ModuleModel::class);
+        $module = $this->mockClassWithProperties(ModuleModel::class);
         $page = $this->mockPageModel();
 
-        /** @var RedirectResponse $response */
-        $response = $controller($request, $module, 'main', null, $page);
+        $request = new Request();
+        $request->attributes->set('pageModel', $page);
+        $request->request->set('FORM_SUBMIT', 'tl_two_factor_show_backup_codes');
+
+        $response = $controller($request, $module, 'main');
 
         $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
     }
 
     public function testGeneratesTheBackupCodes(): void
     {
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->secret = '';
-        $user->useTwoFactor = '1';
+        $user->useTwoFactor = true;
 
         $container = $this->getContainerWithFrameworkTemplate(
-            'mod_two_factor',
             $this->mockAuthenticator(),
             $this->mockAuthenticationUtils(),
-            $this->mockSecurityHelper($user, true)
+            $user,
+            true,
         );
 
-        /** @var BackupCodeManager&MockObject $backupCodeManager */
-        $backupCodeManager = $container->get(BackupCodeManager::class);
+        $backupCodeManager = $container->get('contao.security.two_factor.backup_code_manager');
         $backupCodeManager
             ->expects($this->once())
             ->method('generateBackupCodes')
@@ -383,14 +416,14 @@ class TwoFactorControllerTest extends TestCase
         $controller = new TwoFactorController();
         $controller->setContainer($container);
 
-        $request = new Request();
-        $request->request->set('FORM_SUBMIT', 'tl_two_factor_generate_backup_codes');
-
-        $module = $this->createMock(ModuleModel::class);
+        $module = $this->mockClassWithProperties(ModuleModel::class);
         $page = $this->mockPageModel();
 
-        /** @var RedirectResponse $response */
-        $response = $controller($request, $module, 'main', null, $page);
+        $request = new Request();
+        $request->attributes->set('pageModel', $page);
+        $request->request->set('FORM_SUBMIT', 'tl_two_factor_generate_backup_codes');
+
+        $response = $controller($request, $module, 'main');
 
         $this->assertSame(Response::HTTP_OK, $response->getStatusCode());
     }
@@ -402,15 +435,13 @@ class TwoFactorControllerTest extends TestCase
         $this->assertArrayHasKey('contao.framework', $services);
         $this->assertArrayHasKey('contao.routing.scope_matcher', $services);
         $this->assertArrayHasKey('contao.security.two_factor.authenticator', $services);
+        $this->assertArrayHasKey('contao.security.two_factor.backup_code_manager', $services);
+        $this->assertArrayHasKey('contao.security.two_factor.trusted_device_manager', $services);
         $this->assertArrayHasKey('security.authentication_utils', $services);
-        $this->assertArrayHasKey('security.token_storage', $services);
         $this->assertArrayHasKey('translator', $services);
     }
 
-    /**
-     * @return Authenticator&MockObject
-     */
-    private function mockAuthenticator(FrontendUser $user = null, bool $return = null): Authenticator
+    private function mockAuthenticator(FrontendUser|null $user = null, bool|null $return = null): Authenticator&MockObject
     {
         $authenticator = $this->createMock(Authenticator::class);
 
@@ -426,10 +457,7 @@ class TwoFactorControllerTest extends TestCase
         return $authenticator;
     }
 
-    /**
-     * @return AuthenticationUtils&MockObject
-     */
-    private function mockAuthenticationUtils(AuthenticationException $authenticationException = null): AuthenticationUtils
+    private function mockAuthenticationUtils(AuthenticationException|null $authenticationException = null): AuthenticationUtils&MockObject
     {
         $authenticationUtils = $this->createMock(AuthenticationUtils::class);
 
@@ -444,39 +472,15 @@ class TwoFactorControllerTest extends TestCase
         return $authenticationUtils;
     }
 
-    /**
-     * @return Security&MockObject
-     */
-    private function mockSecurityHelper(UserInterface $user = null, bool $isFullyAuthenticated = false): Security
+    private function mockPageModel(): PageModel&MockObject
     {
-        $security = $this->createMock(Security::class);
-        $security
-            ->method('isGranted')
-            ->with('IS_AUTHENTICATED_FULLY')
-            ->willReturn($isFullyAuthenticated)
-        ;
-
-        $security
-            ->method('getUser')
-            ->willReturn($user)
-        ;
-
-        return $security;
-    }
-
-    /**
-     * @return PageModel&MockObject
-     */
-    private function mockPageModel(): PageModel
-    {
-        /** @var PageModel&MockObject $page */
         $page = $this->mockClassWithProperties(PageModel::class);
-        $page->enforceTwoFactor = '';
+        $page->enforceTwoFactor = false;
 
         return $page;
     }
 
-    private function getContainerWithFrameworkTemplate(string $templateName, Authenticator $authenticator, AuthenticationUtils $authenticationUtils, Security $security): ContainerBuilder
+    private function getContainerWithFrameworkTemplate(Authenticator $authenticator, AuthenticationUtils $authenticationUtils, UserInterface|null $user = null, bool $isFullyAuthenticated = false): ContainerBuilder
     {
         $template = $this->createMock(FrontendTemplate::class);
         $template
@@ -484,27 +488,43 @@ class TwoFactorControllerTest extends TestCase
             ->willReturn(new Response())
         ;
 
-        $adapter = $this->mockAdapter(['findByPk']);
+        $adapter = $this->mockAdapter(['findById']);
         $adapter
-            ->method('findByPk')
+            ->method('findById')
             ->willReturn(null)
         ;
 
         $framework = $this->mockContaoFramework([PageModel::class => $adapter]);
         $framework
             ->method('createInstance')
-            ->with(FrontendTemplate::class, [$templateName])
+            ->with(FrontendTemplate::class, ['mod_two_factor'])
             ->willReturn($template)
+        ;
+
+        $authorizationChecker = $this->createMock(AuthorizationCheckerInterface::class);
+        $authorizationChecker
+            ->method('isGranted')
+            ->with('IS_AUTHENTICATED_FULLY')
+            ->willReturn($isFullyAuthenticated)
+        ;
+
+        $tokenStorage = $this->createMock(TokenStorageInterface::class);
+        $tokenStorage
+            ->method('getToken')
+            ->willReturn($user ? new PreAuthenticatedToken($user, 'contao_frontend') : null)
         ;
 
         $container = $this->getContainerWithContaoConfiguration();
         $container->set('contao.framework', $framework);
+        $container->set('contao.routing.content_url_generator', $this->createMock(ContentUrlGenerator::class));
         $container->set('translator', $this->createMock(TranslatorInterface::class));
         $container->set('contao.security.two_factor.authenticator', $authenticator);
         $container->set('contao.security.two_factor.trusted_device_manager', $this->createMock(TrustedDeviceManager::class));
         $container->set('security.authentication_utils', $authenticationUtils);
-        $container->set(BackupCodeManager::class, $this->createMock(BackupCodeManager::class));
-        $container->set('security.helper', $security);
+        $container->set('security.authorization_checker', $authorizationChecker);
+        $container->set('security.token_storage', $tokenStorage);
+        $container->set('contao.security.two_factor.backup_code_manager', $this->createMock(BackupCodeManager::class));
+        $container->set('contao.cache.tag_manager', $this->createMock(CacheTagManager::class));
 
         System::setContainer($container);
 

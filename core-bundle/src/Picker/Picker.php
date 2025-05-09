@@ -17,34 +17,16 @@ use Knp\Menu\ItemInterface;
 
 class Picker implements PickerInterface
 {
-    /**
-     * @var FactoryInterface
-     */
-    private $menuFactory;
-
-    /**
-     * @var array<PickerProviderInterface>
-     */
-    private $providers;
-
-    /**
-     * @var PickerConfig
-     */
-    private $config;
-
-    /**
-     * @var ItemInterface
-     */
-    private $menu;
+    private ItemInterface|null $menu = null;
 
     /**
      * @param array<PickerProviderInterface> $providers
      */
-    public function __construct(FactoryInterface $menuFactory, array $providers, PickerConfig $config)
-    {
-        $this->menuFactory = $menuFactory;
-        $this->providers = $providers;
-        $this->config = $config;
+    public function __construct(
+        private readonly FactoryInterface $menuFactory,
+        private readonly array $providers,
+        private readonly PickerConfig $config,
+    ) {
     }
 
     public function getConfig(): PickerConfig
@@ -54,7 +36,7 @@ class Picker implements PickerInterface
 
     public function getMenu(): ItemInterface
     {
-        if (null !== $this->menu) {
+        if ($this->menu) {
             return $this->menu;
         }
 
@@ -71,7 +53,7 @@ class Picker implements PickerInterface
         return $this->menu;
     }
 
-    public function getCurrentProvider(): ?PickerProviderInterface
+    public function getCurrentProvider(): PickerProviderInterface|null
     {
         foreach ($this->providers as $provider) {
             if ($provider->isCurrent($this->config)) {
@@ -82,7 +64,7 @@ class Picker implements PickerInterface
         return null;
     }
 
-    public function getCurrentUrl(): ?string
+    public function getCurrentUrl(): string|null
     {
         foreach ($this->providers as $provider) {
             if ($provider->supportsValue($this->config)) {

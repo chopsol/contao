@@ -16,7 +16,10 @@ use Contao\CoreBundle\ContaoCoreBundle;
 use Contao\CoreBundle\Monolog\ContaoContext;
 use Contao\CoreBundle\Monolog\ContaoTableProcessor;
 use Contao\CoreBundle\Tests\TestCase;
-use Monolog\Logger;
+use Contao\PageModel;
+use Monolog\Level;
+use Monolog\LogRecord;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorage;
@@ -28,23 +31,21 @@ class ContaoTableProcessorTest extends TestCase
     public function testCanBeInvoked(): void
     {
         $processor = $this->getContaoTableProcessor();
+        $record = $this->getRecord(['contao' => false]);
 
-        $this->assertEmpty($processor([]));
-        $this->assertSame(['context' => ['contao' => false]], $processor(['context' => ['contao' => false]]));
+        $this->assertSame($record, $processor($record));
     }
 
     /**
-     * @dataProvider actionLevelProvider
+     * @phpstan-param Level::Alert|Level::Critical|Level::Debug|Level::Emergency|Level::Error|Level::Info|Level::Notice|Level::Warning $logLevel
      */
-    public function testReturnsDifferentActionsForDifferentErrorLevels(int $logLevel, string $expectedAction): void
+    #[DataProvider('actionLevelProvider')]
+    public function testReturnsDifferentActionsForDifferentErrorLevels(Level $logLevel, string $expectedAction): void
     {
-        $data = [
-            'level' => $logLevel,
-            'context' => ['contao' => new ContaoContext(__METHOD__)],
-        ];
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__)], $logLevel);
 
         $processor = $this->getContaoTableProcessor();
-        $record = $processor($data);
+        $record = $processor($record);
 
         /** @var ContaoContext $context */
         $context = $record['extra']['contao'];
@@ -53,17 +54,15 @@ class ContaoTableProcessorTest extends TestCase
     }
 
     /**
-     * @dataProvider actionLevelProvider
+     * @phpstan-param Level::Alert|Level::Critical|Level::Debug|Level::Emergency|Level::Error|Level::Info|Level::Notice|Level::Warning $logLevel
      */
-    public function testDoesNotChangeAnExistingAction(int $logLevel): void
+    #[DataProvider('actionLevelProvider')]
+    public function testDoesNotChangeAnExistingAction(Level $logLevel): void
     {
-        $data = [
-            'level' => $logLevel,
-            'context' => ['contao' => new ContaoContext(__METHOD__, ContaoContext::CRON)],
-        ];
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__, ContaoContext::CRON)], $logLevel);
 
         $processor = $this->getContaoTableProcessor();
-        $record = $processor($data);
+        $record = $processor($record);
 
         /** @var ContaoContext $context */
         $context = $record['extra']['contao'];
@@ -71,16 +70,16 @@ class ContaoTableProcessorTest extends TestCase
         $this->assertSame(ContaoContext::CRON, $context->getAction());
     }
 
-    public function actionLevelProvider(): \Generator
+    public static function actionLevelProvider(): iterable
     {
-        yield [Logger::DEBUG, ContaoContext::GENERAL];
-        yield [Logger::INFO, ContaoContext::GENERAL];
-        yield [Logger::NOTICE, ContaoContext::GENERAL];
-        yield [Logger::WARNING, ContaoContext::GENERAL];
-        yield [Logger::ERROR, ContaoContext::ERROR];
-        yield [Logger::CRITICAL, ContaoContext::ERROR];
-        yield [Logger::ALERT, ContaoContext::ERROR];
-        yield [Logger::EMERGENCY, ContaoContext::ERROR];
+        yield [Level::Debug, ContaoContext::GENERAL];
+        yield [Level::Info, ContaoContext::GENERAL];
+        yield [Level::Notice, ContaoContext::GENERAL];
+        yield [Level::Warning, ContaoContext::GENERAL];
+        yield [Level::Error, ContaoContext::ERROR];
+        yield [Level::Critical, ContaoContext::ERROR];
+        yield [Level::Alert, ContaoContext::ERROR];
+        yield [Level::Emergency, ContaoContext::ERROR];
     }
 
     public function testAddsTheUserAgent(): void
@@ -92,44 +91,26 @@ class ContaoTableProcessorTest extends TestCase
 
         $processor = $this->getContaoTableProcessor($requestStack);
 
-        $data = [
-            'context' => [
-                'contao' => new ContaoContext(__METHOD__, null, null, null, 'foobar'),
-            ],
-        ];
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__, null, null, null, 'foobar')]);
+        $record = $processor($record);
 
-        $record = $processor($data);
-
-        /** @var ContaoContext $context */
-        $context = $record['extra']['contao'];
+        $context = $record->extra['contao'];
 
         $this->assertSame('foobar', $context->getBrowser());
 
-        $data = [
-            'context' => [
-                'contao' => new ContaoContext(__METHOD__),
-            ],
-        ];
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__)]);
+        $record = $processor($record);
 
-        $record = $processor($data);
-
-        /** @var ContaoContext $context */
-        $context = $record['extra']['contao'];
+        $context = $record->extra['contao'];
 
         $this->assertSame('Contao test', $context->getBrowser());
 
         $requestStack->pop();
 
-        $data = [
-            'context' => [
-                'contao' => new ContaoContext(__METHOD__),
-            ],
-        ];
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__)]);
+        $record = $processor($record);
 
-        $record = $processor($data);
-
-        /** @var ContaoContext $context */
-        $context = $record['extra']['contao'];
+        $context = $record->extra['contao'];
 
         $this->assertSame('N/A', $context->getBrowser());
     }
@@ -138,7 +119,7 @@ class ContaoTableProcessorTest extends TestCase
     {
         $token = $this->createMock(UsernamePasswordToken::class);
         $token
-            ->method('getUsername')
+            ->method('getUserIdentifier')
             ->willReturn('k.jones')
         ;
 
@@ -147,52 +128,32 @@ class ContaoTableProcessorTest extends TestCase
 
         $processor = $this->getContaoTableProcessor(null, $tokenStorage);
 
-        $data = [
-            'context' => [
-                'contao' => new ContaoContext(__METHOD__, null, 'foobar'),
-            ],
-        ];
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__, null, 'foobar')]);
+        $record = $processor($record);
 
-        $record = $processor($data);
-
-        /** @var ContaoContext $context */
-        $context = $record['extra']['contao'];
+        $context = $record->extra['contao'];
 
         $this->assertSame('foobar', $context->getUsername());
 
-        $data = [
-            'context' => [
-                'contao' => new ContaoContext(__METHOD__),
-            ],
-        ];
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__)]);
+        $record = $processor($record);
 
-        $record = $processor($data);
-
-        /** @var ContaoContext $context */
         $context = $record['extra']['contao'];
 
         $this->assertSame('k.jones', $context->getUsername());
 
-        $tokenStorage->setToken();
+        $tokenStorage->setToken(null);
 
-        $data = [
-            'context' => [
-                'contao' => new ContaoContext(__METHOD__),
-            ],
-        ];
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__)]);
+        $record = $processor($record);
 
-        $record = $processor($data);
-
-        /** @var ContaoContext $context */
-        $context = $record['extra']['contao'];
+        $context = $record->extra['contao'];
 
         $this->assertSame('N/A', $context->getUsername());
     }
 
-    /**
-     * @dataProvider sourceProvider
-     */
-    public function testAddsTheSource(?string $scope, ?string $contextSource, string $expectedSource): void
+    #[DataProvider('sourceProvider')]
+    public function testAddsTheSource(string|null $scope, string|null $contextSource, string $expectedSource): void
     {
         $requestStack = new RequestStack();
 
@@ -203,22 +164,17 @@ class ContaoTableProcessorTest extends TestCase
             $requestStack->push($request);
         }
 
-        $data = [
-            'context' => [
-                'contao' => new ContaoContext(__METHOD__, null, null, null, null, $contextSource),
-            ],
-        ];
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__, null, null, null, null, $contextSource)]);
 
         $processor = $this->getContaoTableProcessor($requestStack);
-        $result = $processor($data);
+        $result = $processor($record);
 
-        /** @var ContaoContext $context */
-        $context = $result['extra']['contao'];
+        $context = $result->extra['contao'];
 
         $this->assertSame($expectedSource, $context->getSource());
     }
 
-    public function sourceProvider(): \Generator
+    public static function sourceProvider(): iterable
     {
         yield [null, 'FE', 'FE'];
         yield [null, 'BE', 'BE'];
@@ -231,16 +187,84 @@ class ContaoTableProcessorTest extends TestCase
         yield [ContaoCoreBundle::SCOPE_BACKEND, null, 'BE'];
     }
 
-    private function getContaoTableProcessor(RequestStack $requestStack = null, TokenStorageInterface $tokenStorage = null): ContaoTableProcessor
+    #[DataProvider('requestProvider')]
+    public function testAddsTheRequestUri(Request|null $request = null, string|null $uri = null): void
     {
-        if (null === $requestStack) {
-            $requestStack = $this->createMock(RequestStack::class);
+        $requestStack = new RequestStack();
+
+        if ($request) {
+            $requestStack->push($request);
         }
 
-        if (null === $tokenStorage) {
-            $tokenStorage = $this->createMock(TokenStorageInterface::class);
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__, null, null, null, 'foobar')]);
+
+        $processor = $this->getContaoTableProcessor($requestStack);
+        $record = $processor($record);
+
+        $context = $record->extra['contao'];
+        $this->assertSame($uri, $context->getUri());
+    }
+
+    public static function requestProvider(): iterable
+    {
+        yield 'regular URL' => [
+            Request::create('https://www.contao.org/foo?bar=baz'),
+            'https://www.contao.org/foo?bar=baz',
+        ];
+
+        yield 'encoded URL' => [
+            Request::create('https://www.contao.org/foo?bar=baz&foo=b%20r'),
+            'https://www.contao.org/foo?bar=baz&foo=b%20r',
+        ];
+
+        yield 'no request' => [null, null];
+    }
+
+    #[DataProvider('requestWithPageIdProvider')]
+    public function testAddsThePageId(Request|null $request = null, int|null $pageId = null): void
+    {
+        if (\is_array($pageModel = $request?->attributes->get('pageModel'))) {
+            $request->attributes->set('pageModel', $this->mockClassWithProperties(PageModel::class, $pageModel));
         }
+
+        $requestStack = new RequestStack();
+
+        if ($request) {
+            $requestStack->push($request);
+        }
+
+        $record = $this->getRecord(['contao' => new ContaoContext(__METHOD__, null, null, null, 'foobar')]);
+
+        $processor = $this->getContaoTableProcessor($requestStack);
+        $record = $processor($record);
+
+        $context = $record->extra['contao'];
+
+        $this->assertSame($pageId, $context->getPageId());
+    }
+
+    public static function requestWithPageIdProvider(): iterable
+    {
+        yield 'request with page model ID' => [new Request([], [], ['pageModel' => '42']), 42];
+        yield 'request with page model' => [new Request([], [], ['pageModel' => ['id' => 13]]), 13];
+        yield 'request without page model' => [new Request(), null];
+        yield 'no request' => [null, null];
+    }
+
+    private function getContaoTableProcessor(RequestStack|null $requestStack = null, TokenStorageInterface|null $tokenStorage = null): ContaoTableProcessor
+    {
+        $requestStack ??= $this->createMock(RequestStack::class);
+        $tokenStorage ??= $this->createMock(TokenStorageInterface::class);
 
         return new ContaoTableProcessor($requestStack, $tokenStorage, $this->mockScopeMatcher());
+    }
+
+    /**
+     * The processor moves the Contao context into the "extra" section, so pass it as
+     * fifth argument to the LogRecord class.
+     */
+    private function getRecord(array $context, Level $level = Level::Debug): LogRecord
+    {
+        return new LogRecord(new \DateTimeImmutable(), '', $level, '', $context, []);
     }
 }

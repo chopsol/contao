@@ -16,19 +16,17 @@ use Contao\BackendUser;
 use Contao\CoreBundle\EventListener\BackendLocaleListener;
 use Contao\CoreBundle\Tests\TestCase;
 use Contao\FrontendUser;
-use PHPUnit\Framework\MockObject\MockObject;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\HttpKernel\KernelInterface;
-use Symfony\Component\Security\Core\Security;
 use Symfony\Contracts\Translation\LocaleAwareInterface;
 
 class BackendLocaleListenerTest extends TestCase
 {
     public function testSetsTheLocale(): void
     {
-        /** @var BackendUser&MockObject $user */
         $user = $this->mockClassWithProperties(BackendUser::class);
         $user->language = 'de';
 
@@ -54,8 +52,9 @@ class BackendLocaleListenerTest extends TestCase
         ;
 
         $kernel = $this->createMock(KernelInterface::class);
-        $event = new RequestEvent($kernel, $request, HttpKernelInterface::MASTER_REQUEST);
+        $event = new RequestEvent($kernel, $request, HttpKernelInterface::MAIN_REQUEST);
 
+        /** @phpstan-var array $GLOBALS (signals PHPStan that the array shape may change) */
         $GLOBALS['TL_LANGUAGE'] = 'en';
 
         $listener = new BackendLocaleListener($security, $translator);
@@ -82,7 +81,7 @@ class BackendLocaleListenerTest extends TestCase
         ;
 
         $kernel = $this->createMock(KernelInterface::class);
-        $event = new RequestEvent($kernel, new Request(), HttpKernelInterface::MASTER_REQUEST);
+        $event = new RequestEvent($kernel, new Request(), HttpKernelInterface::MAIN_REQUEST);
         $translator = $this->createMock(LocaleAwareInterface::class);
 
         $listener = new BackendLocaleListener($security, $translator);
@@ -91,7 +90,6 @@ class BackendLocaleListenerTest extends TestCase
 
     public function testDoesNotSetTheLocaleIfNoUserLanguage(): void
     {
-        /** @var BackendUser&MockObject $user */
         $user = $this->mockClassWithProperties(BackendUser::class);
 
         $security = $this->createMock(Security::class);
@@ -108,7 +106,7 @@ class BackendLocaleListenerTest extends TestCase
         ;
 
         $kernel = $this->createMock(KernelInterface::class);
-        $event = new RequestEvent($kernel, $request, HttpKernelInterface::MASTER_REQUEST);
+        $event = new RequestEvent($kernel, $request, HttpKernelInterface::MAIN_REQUEST);
         $translator = $this->createMock(LocaleAwareInterface::class);
 
         $listener = new BackendLocaleListener($security, $translator);

@@ -17,18 +17,20 @@ use Contao\CoreBundle\Tests\TestCase;
 
 class DataContainerCallbackListenerTest extends TestCase
 {
-    /**
-     * @var DataContainerCallbackListener
-     */
-    private $listener;
+    private DataContainerCallbackListener $listener;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $GLOBALS['TL_DCA'] = [];
-
         $this->listener = new DataContainerCallbackListener();
+    }
+
+    protected function tearDown(): void
+    {
+        unset($GLOBALS['TL_DCA']);
+
+        parent::tearDown();
     }
 
     public function testRegistersCallbacks(): void
@@ -38,13 +40,11 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->listener->setCallbacks(
             [
                 'tl_page' => [
-                    'config.onload_callback' => [
-                        0 => [
-                            ['Test\CallbackListener', 'onLoadCallback'],
-                        ],
-                    ],
+                    'config.onload_callback' => [[
+                        ['Test\CallbackListener', 'onLoadCallback'],
+                    ]],
                 ],
-            ]
+            ],
         );
 
         $this->assertEmpty($GLOBALS['TL_DCA']['tl_page']);
@@ -61,7 +61,7 @@ class DataContainerCallbackListenerTest extends TestCase
                     ],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_page']
+            $GLOBALS['TL_DCA']['tl_page'],
         );
     }
 
@@ -72,18 +72,14 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->listener->setCallbacks(
             [
                 'tl_page' => [
-                    'config.onload_callback' => [
-                        0 => [
-                            ['Test\CallbackListener', 'loadConfigCallback'],
-                        ],
-                    ],
-                    'fields.title.load_callback' => [
-                        0 => [
-                            ['Test\CallbackListener', 'loadFieldCallback'],
-                        ],
-                    ],
+                    'config.onload_callback' => [[
+                        ['Test\CallbackListener', 'loadConfigCallback'],
+                    ]],
+                    'fields.title.load_callback' => [[
+                        ['Test\CallbackListener', 'loadFieldCallback'],
+                    ]],
                 ],
-            ]
+            ],
         );
 
         $this->assertEmpty($GLOBALS['TL_DCA']['tl_page']);
@@ -107,7 +103,7 @@ class DataContainerCallbackListenerTest extends TestCase
                     ],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_page']
+            $GLOBALS['TL_DCA']['tl_page'],
         );
     }
 
@@ -118,13 +114,11 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->listener->setCallbacks(
             [
                 'tl_page' => [
-                    'list.label.label_callback' => [
-                        0 => [
-                            ['Test\CallbackListener', 'onLoadCallback'],
-                        ],
-                    ],
+                    'list.sorting.child_record_callback' => [[
+                        ['Test\CallbackListener', 'onLoadCallback'],
+                    ]],
                 ],
-            ]
+            ],
         );
 
         $this->assertEmpty($GLOBALS['TL_DCA']['tl_page']);
@@ -136,12 +130,12 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->assertSame(
             [
                 'list' => [
-                    'label' => [
-                        'label_callback' => ['Test\CallbackListener', 'onLoadCallback'],
+                    'sorting' => [
+                        'child_record_callback' => ['Test\CallbackListener', 'onLoadCallback'],
                     ],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_page']
+            $GLOBALS['TL_DCA']['tl_page'],
         );
     }
 
@@ -152,13 +146,11 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->listener->setCallbacks(
             [
                 'tl_page' => [
-                    'list.sorting.panel_callback.foobar' => [
-                        0 => [
-                            ['Test\CallbackListener', 'onFoobarCallback'],
-                        ],
-                    ],
+                    'list.sorting.panel_callback.foobar' => [[
+                        ['Test\CallbackListener', 'onFoobarCallback'],
+                    ]],
                 ],
-            ]
+            ],
         );
 
         $this->assertEmpty($GLOBALS['TL_DCA']['tl_page']);
@@ -177,7 +169,7 @@ class DataContainerCallbackListenerTest extends TestCase
                     ],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_page']
+            $GLOBALS['TL_DCA']['tl_page'],
         );
     }
 
@@ -203,7 +195,7 @@ class DataContainerCallbackListenerTest extends TestCase
                         ],
                     ],
                 ],
-            ]
+            ],
         );
 
         $this->assertEmpty($GLOBALS['TL_DCA']['tl_page']);
@@ -223,7 +215,7 @@ class DataContainerCallbackListenerTest extends TestCase
                     ],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_page']
+            $GLOBALS['TL_DCA']['tl_page'],
         );
     }
 
@@ -250,7 +242,7 @@ class DataContainerCallbackListenerTest extends TestCase
                         ],
                     ],
                 ],
-            ]
+            ],
         );
 
         $this->listener->onLoadDataContainer('tl_page');
@@ -268,11 +260,11 @@ class DataContainerCallbackListenerTest extends TestCase
                     ],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_page']
+            $GLOBALS['TL_DCA']['tl_page'],
         );
     }
 
-    public function testAddsCallbackWithPriorityZeroBeforeExistingOnes(): void
+    public function testAddsCallbackWithPriorityZeroAfterExistingOnes(): void
     {
         $GLOBALS['TL_DCA']['tl_page'] = [
             'config' => [
@@ -287,13 +279,11 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->listener->setCallbacks(
             [
                 'tl_page' => [
-                    'config.onload_callback' => [
-                        0 => [
-                            ['Test\CallbackListener', 'newCallback'],
-                        ],
-                    ],
+                    'config.onload_callback' => [[
+                        ['Test\CallbackListener', 'newCallback'],
+                    ]],
                 ],
-            ]
+            ],
         );
 
         $this->listener->onLoadDataContainer('tl_page');
@@ -304,14 +294,14 @@ class DataContainerCallbackListenerTest extends TestCase
             [
                 'config' => [
                     'onload_callback' => [
-                        ['Test\CallbackListener', 'newCallback'],
                         ['Test\CallbackListener', 'existingCallback'],
                         'key' => ['Test\CallbackListener', 'existingCallback2'],
                         ['Test\CallbackListener', 'existingCallback3'],
+                        ['Test\CallbackListener', 'newCallback'],
                     ],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_page']
+            $GLOBALS['TL_DCA']['tl_page'],
         );
     }
 
@@ -322,7 +312,7 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->listener->setCallbacks(
             [
                 'tl_page' => [
-                    'list.label.label_callback' => [
+                    'list.sorting.child_record_callback' => [
                         0 => [
                             ['Test\CallbackListener', 'priority0Callback'],
                         ],
@@ -334,7 +324,7 @@ class DataContainerCallbackListenerTest extends TestCase
                         ],
                     ],
                 ],
-            ]
+            ],
         );
 
         $this->listener->onLoadDataContainer('tl_page');
@@ -344,12 +334,12 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->assertSame(
             [
                 'list' => [
-                    'label' => [
-                        'label_callback' => ['Test\CallbackListener', 'priority10Callback'],
+                    'sorting' => [
+                        'child_record_callback' => ['Test\CallbackListener', 'priority10Callback'],
                     ],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_page']
+            $GLOBALS['TL_DCA']['tl_page'],
         );
     }
 
@@ -357,8 +347,8 @@ class DataContainerCallbackListenerTest extends TestCase
     {
         $GLOBALS['TL_DCA']['tl_page'] = [
             'list' => [
-                'label' => [
-                    'label_callback' => ['Test\CallbackListener', 'existingCallback'],
+                'sorting' => [
+                    'child_record_callback' => ['Test\CallbackListener', 'existingCallback'],
                 ],
             ],
         ];
@@ -366,13 +356,11 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->listener->setCallbacks(
             [
                 'tl_page' => [
-                    'list.label.label_callback' => [
-                        0 => [
-                            ['Test\CallbackListener', 'newCallback'],
-                        ],
-                    ],
+                    'list.sorting.child_record_callback' => [[
+                        ['Test\CallbackListener', 'newCallback'],
+                    ]],
                 ],
-            ]
+            ],
         );
 
         $this->listener->onLoadDataContainer('tl_page');
@@ -382,12 +370,12 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->assertSame(
             [
                 'list' => [
-                    'label' => [
-                        'label_callback' => ['Test\CallbackListener', 'newCallback'],
+                    'sorting' => [
+                        'child_record_callback' => ['Test\CallbackListener', 'newCallback'],
                     ],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_page']
+            $GLOBALS['TL_DCA']['tl_page'],
         );
     }
 
@@ -395,8 +383,8 @@ class DataContainerCallbackListenerTest extends TestCase
     {
         $GLOBALS['TL_DCA']['tl_page'] = [
             'list' => [
-                'label' => [
-                    'label_callback' => ['Test\CallbackListener', 'existingCallback'],
+                'sorting' => [
+                    'child_record_callback' => ['Test\CallbackListener', 'existingCallback'],
                 ],
             ],
         ];
@@ -404,13 +392,13 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->listener->setCallbacks(
             [
                 'tl_page' => [
-                    'list.label.label_callback' => [
+                    'list.sorting.child_record_callback' => [
                         -1 => [
                             ['Test\CallbackListener', 'newCallback'],
                         ],
                     ],
                 ],
-            ]
+            ],
         );
 
         $this->listener->onLoadDataContainer('tl_page');
@@ -420,12 +408,12 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->assertSame(
             [
                 'list' => [
-                    'label' => [
-                        'label_callback' => ['Test\CallbackListener', 'existingCallback'],
+                    'sorting' => [
+                        'child_record_callback' => ['Test\CallbackListener', 'existingCallback'],
                     ],
                 ],
             ],
-            $GLOBALS['TL_DCA']['tl_page']
+            $GLOBALS['TL_DCA']['tl_page'],
         );
     }
 
@@ -436,13 +424,11 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->listener->setCallbacks(
             [
                 'tl_content' => [
-                    'config.onload_callback' => [
-                        0 => [
-                            ['Test\CallbackListener', 'onLoadCallback'],
-                        ],
-                    ],
+                    'config.onload_callback' => [[
+                        ['Test\CallbackListener', 'onLoadCallback'],
+                    ]],
                 ],
-            ]
+            ],
         );
 
         $this->assertEmpty($GLOBALS['TL_DCA']['tl_page']);
@@ -457,16 +443,14 @@ class DataContainerCallbackListenerTest extends TestCase
         $this->listener->setCallbacks(
             [
                 'tl_page' => [
-                    'config.onload_callback' => [
-                        0 => [
-                            ['Test\CallbackListener', 'onLoadCallback'],
-                        ],
-                    ],
+                    'config.onload_callback' => [[
+                        ['Test\CallbackListener', 'onLoadCallback'],
+                    ]],
                 ],
-            ]
+            ],
         );
 
-        $this->assertArrayNotHasKey('tl_page', $GLOBALS['TL_DCA']);
+        $this->assertArrayNotHasKey('tl_page', $GLOBALS['TL_DCA'] ?? []);
 
         $this->listener->onLoadDataContainer('tl_page');
 

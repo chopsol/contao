@@ -14,9 +14,17 @@ namespace Contao\ManagerBundle\Tests\Dotenv;
 
 use Contao\ManagerBundle\Dotenv\DotenvDumper;
 use Contao\TestCase\ContaoTestCase;
+use Symfony\Component\Filesystem\Filesystem;
 
 class DotenvDumperTest extends ContaoTestCase
 {
+    protected function tearDown(): void
+    {
+        (new Filesystem())->remove([$this->getTempDir().'/.env', $this->getTempDir().'/.env.local']);
+
+        parent::tearDown();
+    }
+
     public function testDumpsADotenvFile(): void
     {
         $dotenv = new DotenvDumper($this->getTempDir().'/.env');
@@ -31,16 +39,16 @@ class DotenvDumperTest extends ContaoTestCase
         $dotenv->dump();
 
         $expected = <<<'EOT'
-FOO1=42
-FOO2=42
-FOO3=String
-FOO4='String with spaces'
-FOO5='"DoubleQuotes"'
-FOO6="'SingleQuotes'"
-FOO7='$variable'
-FOO8="String with \"double quotes\" and 'single quotes' and a \$variable"
+            FOO1=42
+            FOO2=42
+            FOO3=String
+            FOO4='String with spaces'
+            FOO5='"DoubleQuotes"'
+            FOO6="'SingleQuotes'"
+            FOO7='$variable'
+            FOO8="String with \"double quotes\" and 'single quotes' and a \$variable"
 
-EOT;
+            EOT;
 
         $this->assertSame($expected, file_get_contents($this->getTempDir().'/.env'));
     }
@@ -54,5 +62,26 @@ EOT;
         $dotenv->dump();
 
         $this->assertSame("BAR=foo\n", file_get_contents($this->getTempDir().'/.env.local'));
+    }
+
+    public function testKeepsParametersUntouched(): void
+    {
+        $original = <<<'EOT'
+            FOO='bar' # comment
+            BAR="foo"
+
+            # comment after empty line
+            BAZ=${FOO}${BAR}
+
+            EOT;
+
+        file_put_contents($this->getTempDir().'/.env.local', $original);
+
+        $dotenv = new DotenvDumper($this->getTempDir().'/.env.local');
+        $dotenv->setParameter('BAZ', 'barfoo');
+        $dotenv->setParameter('NEW', 'value');
+        $dotenv->dump();
+
+        $this->assertSame($original."NEW=value\n", file_get_contents($this->getTempDir().'/.env.local'));
     }
 }

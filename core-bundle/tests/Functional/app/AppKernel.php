@@ -27,6 +27,8 @@ use Symfony\Cmf\Bundle\RoutingBundle\CmfRoutingBundle;
 use Symfony\Component\Config\Loader\LoaderInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\HttpKernel\Kernel;
+use Terminal42\ServiceAnnotationBundle\Terminal42ServiceAnnotationBundle;
+use Webauthn\Bundle\WebauthnBundle;
 
 class AppKernel extends Kernel
 {
@@ -39,9 +41,11 @@ class AppKernel extends Kernel
             new MonologBundle(), // prevents a lot of [debug] lines in the console output (see #1927)
             new DoctrineBundle(),
             new SchebTwoFactorBundle(),
+            new WebauthnBundle(),
             new KnpTimeBundle(),
             new KnpMenuBundle(),
             new CmfRoutingBundle(),
+            new Terminal42ServiceAnnotationBundle(),
             new ContaoCoreBundle(),
             new ContaoNewsBundle(),
         ];
@@ -50,14 +54,6 @@ class AppKernel extends Kernel
     public function getProjectDir(): string
     {
         return \dirname(__DIR__, 3).'/var';
-    }
-
-    /**
-     * @deprecated since Symfony 4.2, use getProjectDir() instead
-     */
-    public function getRootDir(): string
-    {
-        return __DIR__;
     }
 
     public function getCacheDir(): string
@@ -72,7 +68,7 @@ class AppKernel extends Kernel
 
     public function registerContainerConfiguration(LoaderInterface $loader): void
     {
-        $loader->load(__DIR__.'/config/config_'.$this->environment.'.yml');
+        $loader->load(__DIR__.'/config/config_'.$this->environment.'.yaml');
     }
 
     protected function build(ContainerBuilder $container): void

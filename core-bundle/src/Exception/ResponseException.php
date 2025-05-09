@@ -16,15 +16,10 @@ use Symfony\Component\HttpFoundation\Response;
 
 class ResponseException extends \RuntimeException
 {
-    /**
-     * @var Response
-     */
-    private $response;
-
-    public function __construct(Response $response, \Exception $previous = null)
-    {
-        $this->response = $response;
-
+    public function __construct(
+        private readonly Response $response,
+        \Exception|null $previous = null,
+    ) {
         parent::__construct('This exception has no message. Use $exception->getResponse() instead.', 0, $previous);
     }
 

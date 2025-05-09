@@ -12,21 +12,23 @@ declare(strict_types=1);
 
 namespace Contao\ManagerBundle\Tests\ContaoManager;
 
+use CmsIg\Seal\Integration\Symfony\SealBundle;
 use Contao\CoreBundle\ContaoCoreBundle;
 use Contao\ManagerBundle\ContaoManager\Plugin;
 use Contao\ManagerBundle\ContaoManagerBundle;
-use Contao\ManagerPlugin\Bundle\Config\BundleConfig;
 use Contao\ManagerPlugin\Bundle\Parser\DelegatingParser;
 use Contao\ManagerPlugin\Bundle\Parser\ParserInterface;
 use Contao\ManagerPlugin\Config\ContainerBuilder as PluginContainerBuilder;
+use Contao\ManagerPlugin\Dependency\DependentPluginInterface;
 use Contao\ManagerPlugin\PluginLoader;
 use Contao\TestCase\ContaoTestCase;
 use Doctrine\Bundle\DoctrineBundle\DoctrineBundle;
-use Doctrine\DBAL\Connection;
 use FOS\HttpCacheBundle\FOSHttpCacheBundle;
-use Lexik\Bundle\MaintenanceBundle\LexikMaintenanceBundle;
+use League\FlysystemBundle\FlysystemBundle;
 use Nelmio\CorsBundle\NelmioCorsBundle;
 use Nelmio\SecurityBundle\NelmioSecurityBundle;
+use PHPUnit\Framework\Attributes\BackupGlobals;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Bundle\DebugBundle\DebugBundle;
 use Symfony\Bundle\FrameworkBundle\FrameworkBundle;
 use Symfony\Bundle\MonologBundle\MonologBundle;
@@ -38,51 +40,48 @@ use Symfony\Component\Config\Loader\LoaderResolverInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Finder\Finder;
-use Symfony\Component\Finder\SplFileInfo;
 use Symfony\Component\HttpKernel\KernelInterface;
+use Symfony\Component\Mailer\Transport\NativeTransportFactory;
 use Symfony\Component\Routing\Route;
 use Symfony\Component\Routing\RouteCollection;
+use Twig\Extra\TwigExtraBundle\TwigExtraBundle;
 
+#[BackupGlobals(true)]
 class PluginTest extends ContaoTestCase
 {
-    public static function setUpBeforeClass(): void
+    protected function setUp(): void
     {
-        parent::setUpBeforeClass();
+        parent::setUp();
 
-        if (isset($_SERVER['APP_SECRET'])) {
-            $_SERVER['APP_SECRET_ORIG'] = $_SERVER['APP_SECRET'];
-            unset($_SERVER['APP_SECRET']);
-        }
+        $this->backupServerEnvGetPost();
 
-        if (isset($_SERVER['DATABASE_URL'])) {
-            $_SERVER['DATABASE_URL_ORIG'] = $_SERVER['DATABASE_URL'];
-            unset($_SERVER['DATABASE_URL']);
-        }
+        unset($_SERVER['DATABASE_URL'], $_SERVER['APP_SECRET'], $_ENV['DATABASE_URL'], $_SERVER['MAILER_DSN'], $_ENV['MAILER_DSN']);
     }
 
-    public static function tearDownAfterClass(): void
+    protected function tearDown(): void
     {
-        parent::tearDownAfterClass();
+        Plugin::autoloadModules('');
 
-        if (isset($_SERVER['APP_SECRET_ORIG'])) {
-            $_SERVER['APP_SECRET'] = $_SERVER['APP_SECRET_ORIG'];
-            unset($_SERVER['APP_SECRET_ORIG']);
-        }
+        $this->restoreServerEnvGetPost();
+        $this->resetStaticProperties([Plugin::class]);
 
-        if (isset($_SERVER['DATABASE_URL_ORIG'])) {
-            $_SERVER['DATABASE_URL'] = $_SERVER['DATABASE_URL_ORIG'];
-            unset($_SERVER['DATABASE_URL_ORIG']);
-        }
+        parent::tearDown();
+    }
+
+    public function testDependsOnCoreBundlePlugin(): void
+    {
+        $plugin = new Plugin();
+
+        $this->assertInstanceOf(DependentPluginInterface::class, $plugin);
+        $this->assertSame(['contao/core-bundle'], $plugin->getPackageDependencies());
     }
 
     public function testReturnsTheBundles(): void
     {
         $plugin = new Plugin();
-
-        /** @var array<BundleConfig> $bundles */
         $bundles = $plugin->getBundles(new DelegatingParser());
 
-        $this->assertCount(12, $bundles);
+        $this->assertCount(14, $bundles);
 
         $this->assertSame(FrameworkBundle::class, $bundles[0]->getName());
         $this->assertSame([], $bundles[0]->getReplace());
@@ -96,15 +95,15 @@ class PluginTest extends ContaoTestCase
         $this->assertSame([], $bundles[2]->getReplace());
         $this->assertSame([], $bundles[2]->getLoadAfter());
 
-        $this->assertSame(MonologBundle::class, $bundles[3]->getName());
+        $this->assertSame(TwigExtraBundle::class, $bundles[3]->getName());
         $this->assertSame([], $bundles[3]->getReplace());
         $this->assertSame([], $bundles[3]->getLoadAfter());
 
-        $this->assertSame(DoctrineBundle::class, $bundles[4]->getName());
+        $this->assertSame(MonologBundle::class, $bundles[4]->getName());
         $this->assertSame([], $bundles[4]->getReplace());
         $this->assertSame([], $bundles[4]->getLoadAfter());
 
-        $this->assertSame(LexikMaintenanceBundle::class, $bundles[5]->getName());
+        $this->assertSame(DoctrineBundle::class, $bundles[5]->getName());
         $this->assertSame([], $bundles[5]->getReplace());
         $this->assertSame([], $bundles[5]->getLoadAfter());
 
@@ -120,19 +119,28 @@ class PluginTest extends ContaoTestCase
         $this->assertSame([], $bundles[8]->getReplace());
         $this->assertSame([], $bundles[8]->getLoadAfter());
 
-        $this->assertSame(ContaoManagerBundle::class, $bundles[9]->getName());
+        $this->assertSame(SealBundle::class, $bundles[9]->getName());
         $this->assertSame([], $bundles[9]->getReplace());
-        $this->assertSame([ContaoCoreBundle::class], $bundles[9]->getLoadAfter());
+        $this->assertSame([], $bundles[9]->getLoadAfter());
 
-        $this->assertSame(DebugBundle::class, $bundles[10]->getName());
+        $this->assertSame(ContaoManagerBundle::class, $bundles[10]->getName());
         $this->assertSame([], $bundles[10]->getReplace());
-        $this->assertSame([], $bundles[10]->getLoadAfter());
-        $this->assertFalse($bundles[10]->loadInProduction());
+        $this->assertSame([ContaoCoreBundle::class], $bundles[10]->getLoadAfter());
 
-        $this->assertSame(WebProfilerBundle::class, $bundles[11]->getName());
+        $this->assertSame(DebugBundle::class, $bundles[11]->getName());
         $this->assertSame([], $bundles[11]->getReplace());
         $this->assertSame([], $bundles[11]->getLoadAfter());
         $this->assertFalse($bundles[11]->loadInProduction());
+
+        $this->assertSame(WebProfilerBundle::class, $bundles[12]->getName());
+        $this->assertSame([], $bundles[12]->getReplace());
+        $this->assertSame([], $bundles[12]->getLoadAfter());
+        $this->assertFalse($bundles[12]->loadInProduction());
+
+        $this->assertSame(FlysystemBundle::class, $bundles[13]->getName());
+        $this->assertSame([], $bundles[13]->getReplace());
+        $this->assertSame([ContaoCoreBundle::class], $bundles[13]->getLoadAfter());
+        $this->assertTrue($bundles[13]->loadInProduction());
     }
 
     public function testRegistersModuleBundles(): void
@@ -147,17 +155,13 @@ class PluginTest extends ContaoTestCase
         $parser
             ->expects($this->atLeastOnce())
             ->method('parse')
-            ->willReturnCallback(
-                static function ($resource): array {
-                    return [$resource];
-                }
-            )
+            ->willReturnCallback(static fn ($resource): array => [$resource])
         ;
 
         $plugin = new Plugin();
         $configs = $plugin->getBundles($parser);
 
-        $this->assertCount(14, $configs);
+        $this->assertCount(16, $configs);
         $this->assertContains('foo1', $configs);
         $this->assertContains('foo2', $configs);
         $this->assertNotContains('foo3', $configs);
@@ -181,14 +185,14 @@ class PluginTest extends ContaoTestCase
 
                         $resource($container);
                     }
-                }
+                },
             )
         ;
 
         $plugin = new Plugin();
         $plugin->registerContainerConfiguration($loader, []);
 
-        $this->assertContains('config_prod.yml', $files);
+        $this->assertContains('config_prod.yaml', $files);
     }
 
     public function testRegisterContainerConfigurationInDev(): void
@@ -209,18 +213,39 @@ class PluginTest extends ContaoTestCase
 
                         $resource($container);
                     }
-                }
+                },
             )
         ;
 
         $plugin = new Plugin();
         $plugin->registerContainerConfiguration($loader, []);
 
-        $this->assertContains('config_dev.yml', $files);
+        $this->assertContains('config_dev.yaml', $files);
     }
 
     public function testGetRouteCollectionInProd(): void
     {
+        $loader = $this->createMock(LoaderInterface::class);
+        $loader
+            ->expects($this->atLeastOnce())
+            ->method('load')
+            ->willReturnCallback(
+                static function (string $file): RouteCollection {
+                    $collection = new RouteCollection();
+                    $collection->add(basename($file).'_foobar', new Route('/foobar'));
+
+                    return $collection;
+                },
+            )
+        ;
+
+        $resolver = $this->createMock(LoaderResolverInterface::class);
+        $resolver
+            ->expects($this->atLeastOnce())
+            ->method('resolve')
+            ->willReturn($loader)
+        ;
+
         $kernel = $this->createMock(KernelInterface::class);
         $kernel
             ->expects($this->once())
@@ -229,9 +254,11 @@ class PluginTest extends ContaoTestCase
         ;
 
         $plugin = new Plugin();
-        $resolver = $this->createMock(LoaderResolverInterface::class);
+        $collection = $plugin->getRouteCollection($resolver, $kernel);
+        $routes = array_values($collection->all());
 
-        $this->assertNull($plugin->getRouteCollection($resolver, $kernel));
+        $this->assertCount(1, $routes);
+        $this->assertSame('/foobar', $routes[0]->getPath());
     }
 
     public function testGetRouteCollectionInDev(): void
@@ -246,7 +273,7 @@ class PluginTest extends ContaoTestCase
                     $collection->add(basename($file).'_foobar', new Route('/foobar'));
 
                     return $collection;
-                }
+                },
             )
         ;
 
@@ -266,13 +293,12 @@ class PluginTest extends ContaoTestCase
 
         $plugin = new Plugin();
         $collection = $plugin->getRouteCollection($resolver, $kernel);
-
-        /** @var array<Route> $routes */
         $routes = array_values($collection->all());
 
         $this->assertCount(3, $routes);
-        $this->assertSame('/_wdt/foobar', $routes[0]->getPath());
-        $this->assertSame('/_profiler/foobar', $routes[1]->getPath());
+        $this->assertSame('/foobar', $routes[0]->getPath());
+        $this->assertSame('/_wdt/foobar', $routes[1]->getPath());
+        $this->assertSame('/_profiler/foobar', $routes[2]->getPath());
     }
 
     public function testReturnsApiCommands(): void
@@ -282,11 +308,10 @@ class PluginTest extends ContaoTestCase
             ->in(__DIR__.'/../../src/ContaoManager/ApiCommand')
         ;
 
-        /** @var SplFileInfo $file */
         foreach ($files as $file) {
             $this->assertContains(
                 'Contao\ManagerBundle\ContaoManager\ApiCommand\\'.$file->getBasename('.php'),
-                (new Plugin())->getApiCommands()
+                (new Plugin())->getApiCommands(),
             );
         }
     }
@@ -296,6 +321,13 @@ class PluginTest extends ContaoTestCase
         $this->assertSame(
             [
                 'dot-env' => [
+                    'APP_SECRET',
+                    'APP_ENV',
+                    'COOKIE_WHITELIST',
+                    'DATABASE_URL',
+                    'DISABLE_HTTP_CACHE',
+                    'MAILER_DSN',
+                    'TRACE_LEVEL',
                     'TRUSTED_PROXIES',
                     'TRUSTED_HOSTS',
                 ],
@@ -306,27 +338,8 @@ class PluginTest extends ContaoTestCase
                     'debug',
                 ],
             ],
-            (new Plugin())->getApiFeatures()
+            (new Plugin())->getApiFeatures(),
         );
-    }
-
-    /**
-     * @group legacy
-     *
-     * @expectedDeprecation Since contao/manager-bundle 4.6: Defining the "prepend_locale" parameter in the parameters.yml file %s.
-     */
-    public function testHandlesThePrependLocaleParameter(): void
-    {
-        $container = $this->getContainer();
-        $container->setParameter('prepend_locale', true);
-
-        $expect = [[
-            'prepend_locale' => '%prepend_locale%',
-        ]];
-
-        $extensionConfig = (new Plugin())->getExtensionConfig('contao', [], $container);
-
-        $this->assertSame($expect, $extensionConfig);
     }
 
     public function testSetsTheAppSecret(): void
@@ -340,10 +353,33 @@ class PluginTest extends ContaoTestCase
         $this->assertSame('ThisTokenIsNotSoSecretChangeIt', $bag['env(APP_SECRET)']);
     }
 
-    /**
-     * @dataProvider getDatabaseParameters
-     */
-    public function testSetsTheDatabaseUrl(?string $user, ?string $password, ?string $name, string $expected): void
+    public function testSetsDnsMappingParameterAndFallback(): void
+    {
+        $container = $this->getContainer();
+
+        (new Plugin())->getExtensionConfig('contao', [], $container);
+
+        $bag = $container->getParameterBag()->all();
+
+        $this->assertSame('[]', $bag['env(DNS_MAPPING)']);
+        $this->assertSame('%env(json:DNS_MAPPING)%', $bag['contao.dns_mapping']);
+    }
+
+    public function testDoesNotSetDnsParameterIfAlreadyDefined(): void
+    {
+        $container = $this->getContainer();
+        $container->setParameter('contao.dns_mapping', ['example.com' => 'example.local']);
+
+        (new Plugin())->getExtensionConfig('framework', [], $container);
+
+        $bag = $container->getParameterBag()->all();
+
+        $this->assertFalse(isset($bag['env(DNS_MAPPING)']));
+        $this->assertSame(['example.com' => 'example.local'], $bag['contao.dns_mapping']);
+    }
+
+    #[DataProvider('getDatabaseParameters')]
+    public function testSetsTheDatabaseUrl(string|null $user, string|null $password, string|null $name, string $expected): void
     {
         $container = $this->getContainer();
         $container->setParameter('database_user', $user);
@@ -369,52 +405,78 @@ class PluginTest extends ContaoTestCase
         $this->assertSame($expected, $bag['env(DATABASE_URL)']);
     }
 
-    public function getDatabaseParameters(): \Generator
+    public static function getDatabaseParameters(): iterable
     {
         yield [
             null,
             null,
             null,
-            'mysql://localhost:3306',
+            'pdo-mysql://localhost:3306',
         ];
 
         yield [
             null,
             null,
             'contao_test',
-            'mysql://localhost:3306/contao_test',
+            'pdo-mysql://localhost:3306/contao_test',
         ];
 
         yield [
             null,
             'foobar',
             'contao_test',
-            'mysql://localhost:3306/contao_test',
+            'pdo-mysql://localhost:3306/contao_test',
         ];
 
         yield [
             'root',
             null,
             'contao_test',
-            'mysql://root@localhost:3306/contao_test',
+            'pdo-mysql://root@localhost:3306/contao_test',
         ];
 
         yield [
             'root',
             'foobar',
             'contao_test',
-            'mysql://root:foobar@localhost:3306/contao_test',
+            'pdo-mysql://root:foobar@localhost:3306/contao_test',
         ];
 
         yield [
             'root',
             'aA&3yuA?123-2ABC',
             'contao_test',
-            'mysql://root:aA%%263yuA%%3F123-2ABC@localhost:3306/contao_test',
+            'pdo-mysql://root:aA%%263yuA%%3F123-2ABC@localhost:3306/contao_test',
         ];
     }
 
-    public function testAddsTheDefaultServerVersion(): void
+    public function testSetsTheDatabaseDriverUrl(): void
+    {
+        $container = $this->getContainer();
+        $container->setParameter('database_user', 'root');
+        $container->setParameter('database_password', 'foobar');
+        $container->setParameter('database_name', 'contao_test');
+
+        $extensionConfigs = [
+            [
+                'dbal' => [
+                    'connections' => [
+                        'default' => [
+                            'driver' => 'mysqli',
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        (new Plugin())->getExtensionConfig('doctrine', $extensionConfigs, $container);
+
+        $bag = $container->getParameterBag()->all();
+
+        $this->assertSame('mysqli://root:foobar@localhost:3306/contao_test', $bag['env(DATABASE_URL)']);
+    }
+
+    public function testAddsThePdoOptions(): void
     {
         $extensionConfigs = [
             [
@@ -422,29 +484,288 @@ class PluginTest extends ContaoTestCase
                     'connections' => [
                         'default' => [
                             'driver' => 'pdo_mysql',
+                            'options' => [
+                                1002 => '',
+                            ],
                         ],
                     ],
                 ],
             ],
         ];
 
-        $expect = array_merge(
-            $extensionConfigs,
-            [[
+        $expect = [
+            ...$extensionConfigs,
+            ...[[
                 'dbal' => [
                     'connections' => [
                         'default' => [
-                            'server_version' => '5.5',
+                            'options' => [
+                                \PDO::MYSQL_ATTR_MULTI_STATEMENTS => false,
+                            ],
                         ],
                     ],
                 ],
-            ]]
-        );
+            ]],
+        ];
 
         $container = $this->getContainer();
         $extensionConfig = (new Plugin())->getExtensionConfig('doctrine', $extensionConfigs, $container);
 
         $this->assertSame($expect, $extensionConfig);
+    }
+
+    public function testDoesNotAddDefaultPdoOptionsIfDriverIsNotPdo(): void
+    {
+        $extensionConfigs = [
+            [
+                'dbal' => [
+                    'connections' => [
+                        'default' => [
+                            'driver' => 'mysqli',
+                            'host' => 'localhost',
+                            'options' => [
+                                3 => '',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $container = $this->getContainer();
+        $extensionConfig = (new Plugin())->getExtensionConfig('doctrine', $extensionConfigs, $container);
+
+        $this->assertSame($extensionConfigs, $extensionConfig);
+    }
+
+    public function testDoesNotAddDefaultPdoOptionsIfUrlIsMysqli(): void
+    {
+        $_SERVER['DATABASE_URL'] = $_ENV['DATABASE_URL'] = 'mysqli://root:%%40foobar@localhost:3306/database';
+
+        $extensionConfigs = [
+            [
+                'dbal' => [
+                    'connections' => [
+                        'default' => [
+                            'url' => '%env(DATABASE_URL)%',
+                            'options' => [
+                                3 => '',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        // Adjust the error_reporting to suppress mysqli warnings
+        $er = error_reporting();
+        error_reporting($er ^ E_WARNING ^ E_DEPRECATED);
+
+        $container = $this->getContainer();
+        $extensionConfig = (new Plugin())->getExtensionConfig('doctrine', $extensionConfigs, $container);
+
+        error_reporting($er);
+
+        $this->assertSame($extensionConfigs, $extensionConfig);
+    }
+
+    public function testDoesNotOverrideThePdoMultiStatementsOption(): void
+    {
+        $extensionConfigs = [
+            [
+                'dbal' => [
+                    'connections' => [
+                        'default' => [
+                            'driver' => 'pdo_mysql',
+                            'options' => [
+                                \PDO::MYSQL_ATTR_MULTI_STATEMENTS => true,
+                                1002 => '',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $container = $this->getContainer();
+        $extensionConfig = (new Plugin())->getExtensionConfig('doctrine', $extensionConfigs, $container);
+
+        $this->assertSame($extensionConfigs, $extensionConfig);
+    }
+
+    #[DataProvider('provideDatabaseDrivers')]
+    public function testEnablesStrictMode(array $connectionConfig, int $expectedOptionKey): void
+    {
+        $extensionConfigs = [
+            [
+                'dbal' => [
+                    'connections' => [
+                        'default' => $connectionConfig,
+                    ],
+                ],
+            ],
+        ];
+
+        $expect = [
+            ...$extensionConfigs,
+            ...[[
+                'dbal' => [
+                    'connections' => [
+                        'default' => [
+                            'options' => [
+                                $expectedOptionKey => "SET SESSION sql_mode=CONCAT(@@sql_mode, IF(INSTR(@@sql_mode, 'STRICT_'), '', ',TRADITIONAL'))",
+                            ],
+                        ],
+                    ],
+                ],
+            ]],
+        ];
+
+        $container = $this->getContainer();
+        $extensionConfig = (new Plugin())->getExtensionConfig('doctrine', $extensionConfigs, $container);
+
+        $this->assertSame($expect, $extensionConfig);
+    }
+
+    public static function provideDatabaseDrivers(): iterable
+    {
+        yield 'pdo with driver' => [
+            [
+                'driver' => 'mysql',
+                'options' => [\PDO::MYSQL_ATTR_MULTI_STATEMENTS => false],
+            ],
+            1002,
+        ];
+
+        yield 'pdo with driver alias mysql2' => [
+            [
+                'driver' => 'mysql2',
+                'options' => [\PDO::MYSQL_ATTR_MULTI_STATEMENTS => false],
+            ],
+            1002,
+        ];
+
+        yield 'pdo with driver alias pdo_mysql' => [
+            [
+                'driver' => 'pdo_mysql',
+                'options' => [\PDO::MYSQL_ATTR_MULTI_STATEMENTS => false],
+            ],
+            1002,
+        ];
+
+        yield 'pdo with url' => [
+            [
+                'url' => 'mysql://user:secret@localhost/mydb',
+                'options' => [\PDO::MYSQL_ATTR_MULTI_STATEMENTS => false],
+            ],
+            1002,
+        ];
+
+        yield 'pdo with url and driver alias mysql2' => [
+            [
+                'url' => 'mysql2://user:secret@localhost/mydb',
+                'options' => [\PDO::MYSQL_ATTR_MULTI_STATEMENTS => false],
+            ],
+            1002,
+        ];
+
+        yield 'pdo with url and driver alias pdo_mysql' => [
+            [
+                'url' => 'pdo-mysql://user:secret@localhost/mydb',
+                'options' => [\PDO::MYSQL_ATTR_MULTI_STATEMENTS => false],
+            ],
+            1002,
+        ];
+
+        yield 'mysqli with driver' => [
+            [
+                'driver' => 'mysqli',
+            ],
+            3,
+        ];
+
+        yield 'mysqli with url' => [
+            [
+                'url' => 'mysqli://user:secret@localhost/mydb',
+            ],
+            3,
+        ];
+    }
+
+    #[DataProvider('provideUserExtensionConfigs')]
+    public function testSetsDefaultCollation(array $userExtensionConfig): void
+    {
+        $extensionConfigs = [
+            [
+                'dbal' => [
+                    'connections' => [
+                        'default' => [
+                            'options' => [\PDO::MYSQL_ATTR_MULTI_STATEMENTS => false],
+                            'default_table_options' => [
+                                'charset' => 'utf8mb4',
+                                'collate' => 'utf8mb4_unicode_ci',
+                                'collation' => 'utf8mb4_unicode_ci',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            $userExtensionConfig,
+        ];
+
+        $expect = [
+            ...$extensionConfigs,
+            [
+                'dbal' => [
+                    'connections' => [
+                        'default' => [
+                            'default_table_options' => [
+                                'collate' => 'utf8_unicode_ci',
+                                'collation' => 'utf8_unicode_ci',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $container = $this->getContainer();
+        $extensionConfig = (new Plugin())->getExtensionConfig('doctrine', $extensionConfigs, $container);
+
+        $this->assertSame($expect, $extensionConfig);
+    }
+
+    public static function provideUserExtensionConfigs(): iterable
+    {
+        yield 'collate' => [
+            [
+                'dbal' => [
+                    'connections' => [
+                        'default' => [
+                            'default_table_options' => [
+                                'charset' => 'utf8',
+                                'collate' => 'utf8_unicode_ci',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        yield 'collation' => [
+            [
+                'dbal' => [
+                    'connections' => [
+                        'default' => [
+                            'default_table_options' => [
+                                'charset' => 'utf8',
+                                'collation' => 'utf8_unicode_ci',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
     }
 
     public function testUpdatesTheMailerTransport(): void
@@ -508,10 +829,8 @@ class PluginTest extends ContaoTestCase
         $this->assertSame($expect, $extensionConfig);
     }
 
-    /**
-     * @dataProvider getMailerParameters
-     */
-    public function testSetsTheMailerDsn(string $transport, ?string $host, ?string $user, ?string $password, ?int $port, ?string $encryption, string $expected): void
+    #[DataProvider('getMailerParameters')]
+    public function testSetsTheMailerDsn(string $transport, string|null $host, string|null $user, string|null $password, int|null $port, string|null $encryption, string $expected): void
     {
         $container = $this->getContainer();
         $container->setParameter('mailer_transport', $transport);
@@ -528,8 +847,14 @@ class PluginTest extends ContaoTestCase
         $this->assertSame($expected, $bag['env(MAILER_DSN)']);
     }
 
-    public function getMailerParameters(): \Generator
+    public static function getMailerParameters(): iterable
     {
+        $default = 'sendmail://default';
+
+        if (class_exists(NativeTransportFactory::class)) {
+            $default = 'native://default';
+        }
+
         yield [
             'mail',
             null,
@@ -537,7 +862,7 @@ class PluginTest extends ContaoTestCase
             null,
             null,
             null,
-            'sendmail+smtp://default',
+            $default,
         ];
 
         yield [
@@ -547,7 +872,7 @@ class PluginTest extends ContaoTestCase
             null,
             25,
             null,
-            'sendmail+smtp://default',
+            $default,
         ];
 
         yield [
@@ -631,137 +956,75 @@ class PluginTest extends ContaoTestCase
         ];
     }
 
-    /**
-     * @dataProvider getMailerUrlParameters
-     */
-    public function testSetsTheMailerDsnFromMailerUrl(string $mailerUrl, string $expected): void
+    public function testUpdatesTheClickjackingPaths(): void
     {
-        $_SERVER['MAILER_URL'] = $mailerUrl;
+        $extensionConfigs = [
+            [
+                'clickjacking' => [
+                    'paths' => [
+                        '^/foobar/' => 'ALLOW',
+                    ],
+                ],
+            ],
+        ];
 
         $container = $this->getContainer();
+        $extensionConfig = (new Plugin())->getExtensionConfig('nelmio_security', $extensionConfigs, $container);
 
-        (new Plugin())->getExtensionConfig('framework', [], $container);
+        $expectedConfigs = [
+            [
+                'clickjacking' => [
+                    'paths' => [
+                        '^/foobar/' => 'ALLOW',
+                    ],
+                ],
+            ],
+            [
+                'clickjacking' => [
+                    'paths' => [
+                        '^/.*' => 'SAMEORIGIN',
+                    ],
+                ],
+            ],
+        ];
 
-        $bag = $container->getParameterBag()->all();
-
-        $this->assertSame($expected, $bag['env(MAILER_DSN)']);
+        $this->assertSame($expectedConfigs, $extensionConfig);
     }
 
-    public function getMailerUrlParameters(): \Generator
+    public function testDoesNotOverrideDefaultClickjackingPath(): void
     {
-        yield [
-            'sendmail://localhost',
-            'sendmail+smtp://default',
+        $extensionConfigs = [
+            [
+                'clickjacking' => [
+                    'paths' => [
+                        '^/foobar/' => 'DENY',
+                        '^/.*' => 'ALLOW',
+                    ],
+                ],
+            ],
         ];
-
-        yield [
-            'mail://localhost',
-            'sendmail+smtp://default',
-        ];
-
-        yield [
-            'smtp://127.0.0.1:25',
-            'smtp://127.0.0.1:25',
-        ];
-
-        yield [
-            'smtp://127.0.0.1:25?local_domain=example.org&foo=bar',
-            'smtp://127.0.0.1:25?local_domain=example.org&foo=bar',
-        ];
-
-        yield [
-            'smtp://foo@bar.com@127.0.0.1:25',
-            'smtp://foo%%40bar.com@127.0.0.1:25',
-        ];
-
-        yield [
-            'smtp://127.0.0.1:25?username=foo@bar.com',
-            'smtp://foo%%40bar.com@127.0.0.1:25',
-        ];
-
-        yield [
-            'smtp://127.0.0.1:25?username=foo@bar.com&password=foobar',
-            'smtp://foo%%40bar.com:foobar@127.0.0.1:25',
-        ];
-
-        yield [
-            'smtp://foo@bar.com:foobar@127.0.0.1:25',
-            'smtp://foo%%40bar.com:foobar@127.0.0.1:25',
-        ];
-
-        yield [
-            'smtp://127.0.0.1:587?encryption=tls',
-            'smtp://127.0.0.1:587',
-        ];
-
-        yield [
-            'smtp://127.0.0.1:587?username=foo@bar.com&password=foobar&encryption=tls',
-            'smtp://foo%%40bar.com:foobar@127.0.0.1:587',
-        ];
-
-        yield [
-            'smtp://127.0.0.1?encryption=ssl',
-            'smtps://127.0.0.1',
-        ];
-
-        yield [
-            'smtp://foo@bar.com:foobar@127.0.0.1?encryption=ssl',
-            'smtps://foo%%40bar.com:foobar@127.0.0.1',
-        ];
-
-        yield [
-            'smtp://127.0.0.1:465?encryption=ssl',
-            'smtps://127.0.0.1:465',
-        ];
-
-        yield [
-            'smtp://127.0.0.1:465?username=foo@bar.com&password=foobar&encryption=ssl',
-            'smtps://foo%%40bar.com:foobar@127.0.0.1:465',
-        ];
-
-        yield [
-            'gmail://localhost',
-            'smtps://smtp.gmail.com',
-        ];
-
-        yield [
-            '?transport=gmail',
-            'smtps://smtp.gmail.com',
-        ];
-    }
-
-    /**
-     * @dataProvider getInvalidMailerUrlParameters
-     */
-    public function testThrowsExceptionIfMailerUrlIsInvalid(string $invalidMailerUrl): void
-    {
-        $_SERVER['MAILER_URL'] = $invalidMailerUrl;
 
         $container = $this->getContainer();
+        $extensionConfig = (new Plugin())->getExtensionConfig('nelmio_security', $extensionConfigs, $container);
 
-        $this->expectException(\InvalidArgumentException::class);
-
-        (new Plugin())->getExtensionConfig('framework', [], $container);
+        $this->assertSame($extensionConfigs, $extensionConfig);
     }
 
-    public function getInvalidMailerUrlParameters(): \Generator
+    public function testDoesNotAddDefaultDoctrineMappingIfEntityFolderDoesNotExists(): void
     {
-        yield['smtp'];
+        $plugin = new Plugin();
+        $extensionConfig = $plugin->getExtensionConfig('doctrine', [], $this->getContainer());
 
-        yield['smtp://'];
+        // Ignore the DBAL entry
+        unset($extensionConfig[0]['dbal']);
 
-        yield['//smtp'];
-
-        yield['?host=localhost'];
-
-        yield['foo://localhost'];
+        $this->assertCount(1, $extensionConfig);
+        $this->assertEmpty($extensionConfig[0]);
     }
 
-    public function testRetrievesTheConnectionParametersFromTheConfiguration(): void
+    #[DataProvider('getOrmMappingConfigurations')]
+    public function testOnlyAddsTheDefaultDoctrineMappingIfAutoMappingIsEnabledAndNotAlreadyConfigured(array $ormConfig, string $defaultEntityManager, bool $shouldAdd): void
     {
-        $pluginLoader = $this->createMock(PluginLoader::class);
-        $container = new PluginContainerBuilder($pluginLoader, []);
-
         $extensionConfigs = [
             [
                 'dbal' => [
@@ -772,39 +1035,222 @@ class PluginTest extends ContaoTestCase
                         ],
                     ],
                 ],
+                'orm' => $ormConfig,
+            ],
+            [
+                'dbal' => [
+                    'connections' => [
+                        'default' => [
+                            'options' => [
+                                \PDO::MYSQL_ATTR_MULTI_STATEMENTS => false,
+                                1002 => '',
+                            ],
+                        ],
+                    ],
+                ],
             ],
         ];
 
-        $connection = $this->createMock(Connection::class);
-        $connection
-            ->expects($this->once())
-            ->method('connect')
-        ;
+        $expect = $extensionConfigs;
 
-        $connection
-            ->expects($this->once())
-            ->method('close')
-        ;
-
-        $dbalConnectionFactory = function ($params) use ($connection) {
-            $this->assertSame(
+        if ($shouldAdd) {
+            $expect = [
+                ...$extensionConfigs,
                 [
-                    'url' => 'mysql://root:%%40foobar@localhost:3306/database',
-                    'password' => '@foobar',
+                    'orm' => [
+                        'entity_managers' => [
+                            $defaultEntityManager => [
+                                'mappings' => [
+                                    'App' => [
+                                        'dir' => '%kernel.project_dir%/src/Entity',
+                                        'is_bundle' => false,
+                                        'prefix' => 'App\Entity',
+                                        'alias' => 'App',
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
                 ],
-                $params
-            );
+            ];
+        }
 
-            return $connection;
-        };
+        $plugin = new Plugin();
 
-        $url = $_ENV['DATABASE_URL'] ?? null;
-        $_SERVER['DATABASE_URL'] = $_ENV['DATABASE_URL'] = 'mysql://root:%%40foobar@localhost:3306/database';
+        $container = $this->getContainer();
+        $container->setParameter('kernel.project_dir', __DIR__.'/../Fixtures/app-with-entities');
 
-        $plugin = new Plugin($dbalConnectionFactory);
-        $plugin->getExtensionConfig('doctrine', $extensionConfigs, $container);
+        $this->assertSame($expect, $plugin->getExtensionConfig('doctrine', $extensionConfigs, $container));
+    }
 
-        $_ENV['DATABASE_URL'] = $url;
+    public static function getOrmMappingConfigurations(): iterable
+    {
+        // Positive configurations
+        yield 'with global auto_mapping enabled' => [
+            [
+                'auto_mapping' => true,
+            ],
+            'default',
+            true,
+        ];
+
+        yield 'with auto_mapping enabled in default entity manager' => [
+            [
+                'entity_managers' => [
+                    'default' => [
+                        'auto_mapping' => true,
+                    ],
+                ],
+            ],
+            'default',
+            true,
+        ];
+
+        yield 'with auto_mapping enabled in a renamed default entity manager' => [
+            [
+                'default_entity_manager' => 'foo',
+                'entity_managers' => [
+                    'foo' => [
+                        'auto_mapping' => true,
+                    ],
+                ],
+            ],
+            'foo',
+            true,
+        ];
+
+        // Skip, because auto_mapping is not set
+        yield 'with auto_mapping not set' => [
+            [
+            ],
+            'default',
+            false,
+        ];
+
+        yield 'with global auto_mapping disabled' => [
+            [
+                'auto_mapping' => false,
+            ],
+            'default',
+            false,
+        ];
+
+        yield 'with auto_mapping disabled in default entity manager' => [
+            [
+                'entity_managers' => [
+                    'default' => [
+                        'auto_mapping' => false,
+                    ],
+                ],
+            ],
+            'default',
+            false,
+        ];
+
+        yield 'with auto_mapping disabled in a renamed default entity manager' => [
+            [
+                'default_entity_manager' => 'foo',
+                'entity_managers' => [
+                    'foo' => [
+                        'auto_mapping' => false,
+                    ],
+                ],
+            ],
+            'foo',
+            false,
+        ];
+
+        // Skip, because conflicting mapping already exists (global)
+        yield 'with existing global mapping "App"' => [
+            [
+                'auto_mapping' => true,
+                'mappings' => [
+                    'App' => [
+                        'foo' => 'bar',
+                    ],
+                ],
+            ],
+            'default',
+            false,
+        ];
+
+        yield 'with existing global mapping with alias "App"' => [
+            [
+                'auto_mapping' => true,
+                'mappings' => [
+                    'Foo' => [
+                        'alias' => 'App',
+                    ],
+                ],
+            ],
+            'default',
+            false,
+        ];
+
+        yield 'with existing global mapping setting target directory' => [
+            [
+                'auto_mapping' => true,
+                'mappings' => [
+                    'Foo' => [
+                        'dir' => '%kernel.project_dir%/src/Entity',
+                    ],
+                ],
+            ],
+            'default',
+            false,
+        ];
+
+        // Skip, because conflicting mapping already exists (in any entity manager)
+        yield 'with existing mapping "App" in any entity manager' => [
+            [
+                'auto_mapping' => true,
+                'entity_managers' => [
+                    'foo' => [
+                        'mappings' => [
+                            'App' => [
+                                'foo' => 'bar',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            'default',
+            false,
+        ];
+
+        yield 'with existing mapping with alias "App" in any entity manager' => [
+            [
+                'auto_mapping' => true,
+                'entity_managers' => [
+                    'foo' => [
+                        'mappings' => [
+                            'bar' => [
+                                'alias' => 'App',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            'default',
+            false,
+        ];
+
+        yield 'with existing mapping setting target directory in any entity manager' => [
+            [
+                'auto_mapping' => true,
+                'entity_managers' => [
+                    'foo' => [
+                        'mappings' => [
+                            'bar' => [
+                                'dir' => '%kernel.project_dir%/src/Entity',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            'default',
+            false,
+        ];
     }
 
     private function getContainer(): PluginContainerBuilder
@@ -824,6 +1270,7 @@ class PluginTest extends ContaoTestCase
         $container->setParameter('mailer_port', 25);
         $container->setParameter('mailer_encryption', null);
         $container->setParameter('secret', 'ThisTokenIsNotSoSecretChangeIt');
+        $container->setParameter('kernel.project_dir', __DIR__.'/../Fixtures/app');
 
         return $container;
     }

@@ -12,26 +12,25 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Picker;
 
+use Contao\CoreBundle\DependencyInjection\Attribute\AsPickerProvider;
 use Knp\Menu\FactoryInterface;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\Routing\RouterInterface;
-use Symfony\Component\Security\Core\Security;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
+#[AsPickerProvider(priority: 192)]
 class PagePickerProvider extends AbstractInsertTagPickerProvider implements DcaPickerProviderInterface
 {
     /**
-     * @var Security
+     * @internal
      */
-    private $security;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.picker.page_provider" service instead
-     */
-    public function __construct(FactoryInterface $menuFactory, RouterInterface $router, ?TranslatorInterface $translator, Security $security)
-    {
+    public function __construct(
+        FactoryInterface $menuFactory,
+        RouterInterface $router,
+        TranslatorInterface $translator,
+        private readonly Security $security,
+    ) {
         parent::__construct($menuFactory, $router, $translator);
-
-        $this->security = $security;
     }
 
     public function getName(): string
@@ -39,7 +38,7 @@ class PagePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
         return 'pagePicker';
     }
 
-    public function supportsContext($context): bool
+    public function supportsContext(string $context): bool
     {
         return \in_array($context, ['page', 'link'], true) && $this->security->isGranted('contao_user.modules', 'page');
     }
@@ -53,7 +52,7 @@ class PagePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
         return $this->isMatchingInsertTag($config);
     }
 
-    public function getDcaTable(): string
+    public function getDcaTable(PickerConfig|null $config = null): string
     {
         return 'tl_page';
     }
@@ -68,40 +67,38 @@ class PagePickerProvider extends AbstractInsertTagPickerProvider implements DcaP
                 $attributes['fieldType'] = $fieldType;
             }
 
-            if ($source = $config->getExtra('source')) {
-                $attributes['preserveRecord'] = $source;
-            }
-
             if (\is_array($rootNodes = $config->getExtra('rootNodes'))) {
                 $attributes['rootNodes'] = $rootNodes;
             }
 
             if ($value) {
-                $attributes['value'] = array_map('\intval', explode(',', $value));
+                $attributes['value'] = array_map(\intval(...), explode(',', $value));
             }
 
             return $attributes;
         }
 
-        $chunks = $this->getInsertTagChunks($config);
+        if ($value && $this->isMatchingInsertTag($config)) {
+            $attributes['value'] = $this->getInsertTagValue($config);
 
-        if ($value && false !== strpos($value, $chunks[0])) {
-            $attributes['value'] = str_replace($chunks, '', $value);
+            if ($flags = $this->getInsertTagFlags($config)) {
+                $attributes['flags'] = $flags;
+            }
         }
 
         return $attributes;
     }
 
-    public function convertDcaValue(PickerConfig $config, $value)
+    public function convertDcaValue(PickerConfig $config, mixed $value): int|string
     {
         if ('page' === $config->getContext()) {
             return (int) $value;
         }
 
-        return sprintf($this->getInsertTag($config), $value);
+        return \sprintf($this->getInsertTag($config), $value);
     }
 
-    protected function getRouteParameters(PickerConfig $config = null): array
+    protected function getRouteParameters(PickerConfig|null $config = null): array
     {
         return ['do' => 'page'];
     }

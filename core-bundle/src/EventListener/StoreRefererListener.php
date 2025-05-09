@@ -14,29 +14,21 @@ namespace Contao\CoreBundle\EventListener;
 
 use Contao\CoreBundle\Routing\ScopeMatcher;
 use Contao\User;
+use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Event\ResponseEvent;
-use Symfony\Component\Security\Core\Security;
 
 /**
  * @internal
  */
+#[AsEventListener]
 class StoreRefererListener
 {
-    /**
-     * @var Security
-     */
-    private $security;
-
-    /**
-     * @var ScopeMatcher
-     */
-    private $scopeMatcher;
-
-    public function __construct(Security $security, ScopeMatcher $scopeMatcher)
-    {
-        $this->security = $security;
-        $this->scopeMatcher = $scopeMatcher;
+    public function __construct(
+        private readonly Security $security,
+        private readonly ScopeMatcher $scopeMatcher,
+    ) {
     }
 
     /**
@@ -44,7 +36,7 @@ class StoreRefererListener
      */
     public function __invoke(ResponseEvent $event): void
     {
-        if (!$this->scopeMatcher->isBackendMasterRequest($event)) {
+        if (!$this->scopeMatcher->isBackendMainRequest($event)) {
             return;
         }
 
@@ -82,12 +74,12 @@ class StoreRefererListener
 
         // Move current to last if the referer is in both the URL and the session
         if ('' !== $ref && isset($referers[$ref])) {
-            $referers[$refererId] = array_merge($referers[$refererId], $referers[$ref]);
+            $referers[$refererId] = [...$referers[$ref], ...$referers[$refererId]];
             $referers[$refererId]['last'] = $referers[$ref]['current'];
         }
 
         // Set new current referer
-        $referers[$refererId]['current'] = $this->getRelativeRequestUri($request);
+        $referers[$refererId]['current'] = $request->getRequestUri();
 
         $session->set($key, $referers);
     }
@@ -99,14 +91,15 @@ class StoreRefererListener
             && !$request->query->has('token')
             && !$request->query->has('state')
             && 'feRedirect' !== $request->query->get('do')
-            && 'contao_backend' === $request->attributes->get('_route')
+            && 'backend' === $request->attributes->get('_scope')
+            && false !== $request->attributes->get('_store_referrer')
             && !$request->isXmlHttpRequest();
     }
 
     /**
-     * @return array<string,array<string,string>>
+     * @return array<string, array<string, string>>
      */
-    private function prepareBackendReferer(string $refererId, array $referers = null): array
+    private function prepareBackendReferer(string $refererId, array|null $referers = null): array
     {
         if (!\is_array($referers)) {
             $referers = [];
@@ -122,13 +115,5 @@ class StoreRefererListener
         }
 
         return $referers;
-    }
-
-    /**
-     * Returns the current request URI relative to the base path.
-     */
-    private function getRelativeRequestUri(Request $request): string
-    {
-        return (string) substr($request->getRequestUri(), \strlen($request->getBasePath()) + 1);
     }
 }

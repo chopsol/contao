@@ -16,26 +16,28 @@ use Symfony\Component\HttpFoundation\Session\Attribute\AttributeBag;
 
 /**
  * Provides an array access adapter for a session attribute bag.
+ *
+ * @implements \ArrayAccess<mixed, mixed>
  */
 class ArrayAttributeBag extends AttributeBag implements \ArrayAccess
 {
-    public function offsetExists($key): bool
+    public function offsetExists(mixed $offset): bool
     {
-        return $this->has($key);
+        return $this->has($offset);
     }
 
-    public function &offsetGet($key)
+    public function &offsetGet(mixed $offset): mixed
     {
-        return $this->attributes[$key];
+        return $this->attributes[$offset];
     }
 
-    public function offsetSet($key, $value): void
+    public function offsetSet(mixed $offset, mixed $value): void
     {
-        $this->set($key, $value);
+        $this->set($offset, $value);
     }
 
-    public function offsetUnset($key): void
+    public function offsetUnset(mixed $offset): void
     {
-        $this->remove($key);
+        $this->remove($offset);
     }
 }

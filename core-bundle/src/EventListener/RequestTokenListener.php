@@ -12,119 +12,99 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\EventListener;
 
-use Contao\Config;
+use Contao\CoreBundle\Csrf\ContaoCsrfTokenManager;
 use Contao\CoreBundle\Exception\InvalidRequestTokenException;
-use Contao\CoreBundle\Framework\ContaoFramework;
 use Contao\CoreBundle\Routing\ScopeMatcher;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
+use Symfony\Component\HttpFoundation\HeaderUtils;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\Security\Csrf\CsrfToken;
-use Symfony\Component\Security\Csrf\CsrfTokenManagerInterface;
 
 /**
  * Validates the request token if the request is a Contao request.
  *
+ * The priority must be lower than the one of the Symfony route listener (defaults
+ * to 32) and the Symfony locale aware listener (defaults to 15).
+ *
  * @internal
  */
+#[AsEventListener(priority: 14)]
 class RequestTokenListener
 {
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    /**
-     * @var ScopeMatcher
-     */
-    private $scopeMatcher;
-
-    /**
-     * @var CsrfTokenManagerInterface
-     */
-    private $csrfTokenManager;
-
-    /**
-     * @var string
-     */
-    private $csrfTokenName;
-
-    /**
-     * @var string
-     */
-    private $csrfCookiePrefix;
-
-    public function __construct(ContaoFramework $framework, ScopeMatcher $scopeMatcher, CsrfTokenManagerInterface $csrfTokenManager, string $csrfTokenName, string $csrfCookiePrefix = 'csrf_')
-    {
-        $this->framework = $framework;
-        $this->scopeMatcher = $scopeMatcher;
-        $this->csrfTokenManager = $csrfTokenManager;
-        $this->csrfTokenName = $csrfTokenName;
-        $this->csrfCookiePrefix = $csrfCookiePrefix;
+    public function __construct(
+        private readonly ScopeMatcher $scopeMatcher,
+        private readonly ContaoCsrfTokenManager $csrfTokenManager,
+        private readonly string $csrfTokenName,
+        private readonly string $csrfCookiePrefix = 'csrf_',
+    ) {
     }
 
-    /**
-     * @throws InvalidRequestTokenException
-     */
     public function __invoke(RequestEvent $event): void
     {
-        // Don't do anything if it's not the master request
-        if (!$event->isMasterRequest()) {
+        // Don't do anything if it's not the main request
+        if (!$event->isMainRequest()) {
             return;
         }
 
         $request = $event->getRequest();
 
-        // Only check the request token if a) the request is a POST request, b)
-        // the request is not an Ajax request, c) the _token_check attribute is
-        // not false, d) the _token_check attribute is set or the request is a
-        // Contao request and e) the request has cookies, an authenticated user
-        // or the session has been started
+        // Only check the request token if
+        // - the request is a POST request,
+        // - the request is not an Ajax request,
+        // - the request is a CORS Content-Type that requires a preflight request,
+        // - the _token_check attribute is not false,
+        // - the _token_check attribute is true or the request is a Contao request and
+        // - the request has cookies, an authenticated user or the session has been started.
         if (
             'POST' !== $request->getRealMethod()
             || $request->isXmlHttpRequest()
+            || !self::isSimpleCorsRequest($request)
             || false === $request->attributes->get('_token_check')
-            || (!$request->attributes->has('_token_check') && !$this->scopeMatcher->isContaoRequest($request))
-            || (
-                (0 === $request->cookies->count() || [$this->csrfCookiePrefix.$this->csrfTokenName] === $request->cookies->keys())
-                && !$request->getUserInfo()
-                && !($request->hasSession() && $request->getSession()->isStarted())
-            )
+            || $this->csrfTokenManager->canSkipTokenValidation($request, $this->csrfCookiePrefix.$this->csrfTokenName)
+            || (true !== $request->attributes->get('_token_check') && !$this->scopeMatcher->isContaoRequest($request))
         ) {
             return;
         }
 
-        /** @var Config $config */
-        $config = $this->framework->getAdapter(Config::class);
-
-        if (\defined('BYPASS_TOKEN_CHECK')) {
-            trigger_deprecation('contao/core-bundle', '4.0', 'Defining the BYPASS_TOKEN_CHECK constant has been deprecated and will no longer work in Contao 5.0.');
-
-            return;
-        }
-
-        if ($config->get('disableRefererCheck')) {
-            trigger_deprecation('contao/core-bundle', '4.0', 'Using the "disableRefererCheck" setting has been deprecated and will no longer work in Contao 5.0.');
-
-            return;
-        }
-
-        if ($config->get('requestTokenWhitelist')) {
-            trigger_deprecation('contao/core-bundle', '4.0', 'Using the "requestTokenWhitelist" setting has been deprecated and will no longer work in Contao 5.0.');
-
-            $hostname = gethostbyaddr($request->getClientIp());
-
-            foreach ($config->get('requestTokenWhitelist') as $domain) {
-                if ($domain === $hostname || preg_match('/\.'.preg_quote($domain, '/').'$/', $hostname)) {
-                    return;
-                }
-            }
-        }
-
-        $token = new CsrfToken($this->csrfTokenName, $request->request->get('REQUEST_TOKEN'));
+        $token = new CsrfToken($this->csrfTokenName, $this->getTokenFromRequest($request));
 
         if ($this->csrfTokenManager->isTokenValid($token)) {
             return;
         }
 
         throw new InvalidRequestTokenException('Invalid CSRF token. Please reload the page and try again.');
+    }
+
+    public static function isSimpleCorsRequest(Request $request): bool
+    {
+        $contentType = HeaderUtils::split($request->headers->get('content-type'), ';')[0] ?? '';
+
+        return \in_array(
+            strtolower($contentType),
+            [
+                'application/x-www-form-urlencoded',
+                'multipart/form-data',
+                'text/plain',
+            ],
+            true,
+        );
+    }
+
+    private function getTokenFromRequest(Request $request): string|null
+    {
+        if ($request->request->has('REQUEST_TOKEN')) {
+            return (string) $request->request->get('REQUEST_TOKEN');
+        }
+
+        // Look for the token inside the root level arrays as they would be in named
+        // Symfony forms
+        foreach ($request->request as $value) {
+            if (\is_array($value) && isset($value['REQUEST_TOKEN'])) {
+                return $value['REQUEST_TOKEN'];
+            }
+        }
+
+        return null;
     }
 }

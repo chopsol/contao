@@ -27,28 +27,18 @@ class ValidCharacters
     ];
 
     /**
-     * @var EventDispatcherInterface
+     * @internal
      */
-    private $eventDispatcher;
-
-    /**
-     * @var TranslatorInterface
-     */
-    private $translator;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.slug.valid_characters" service instead
-     */
-    public function __construct(EventDispatcherInterface $eventDispatcher, TranslatorInterface $translator)
-    {
-        $this->eventDispatcher = $eventDispatcher;
-        $this->translator = $translator;
+    public function __construct(
+        private readonly EventDispatcherInterface $eventDispatcher,
+        private readonly TranslatorInterface $translator,
+    ) {
     }
 
     /**
      * Returns the options for the valid characters setting suitable for widgets.
      *
-     * @return array<string,string>
+     * @return array<string, string>
      */
     public function getOptions(): array
     {

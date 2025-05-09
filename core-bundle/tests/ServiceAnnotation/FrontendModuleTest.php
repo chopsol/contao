@@ -20,6 +20,8 @@ class FrontendModuleTest extends TestCase
 {
     public function testReturnsTheTagName(): void
     {
+        $this->expectUserDeprecationMessageMatches('/Use the #\[AsFrontendModule] attribute instead\./');
+
         $annotation = new FrontendModule(['category' => 'foobar']);
 
         $this->assertSame(FrontendModuleReference::TAG_NAME, $annotation->getName());
@@ -41,7 +43,7 @@ class FrontendModuleTest extends TestCase
                 'renderer' => 'esi',
                 'type' => 'foobar',
             ],
-            $annotation->getAttributes()
+            $annotation->getAttributes(),
         );
     }
 

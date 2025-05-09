@@ -12,21 +12,25 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle;
 
+use Composer\InstalledVersions;
+use Contao\CoreBundle\DependencyInjection\Compiler\AccessDecisionStrategyPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\AddAssetsPackagesPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\AddAvailableTransportsPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\AddCronJobsPass;
-use Contao\CoreBundle\DependencyInjection\Compiler\AddPackagesPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\AddInsertTagsPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\AddNativeTransportFactoryPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\AddResourcesPathsPass;
-use Contao\CoreBundle\DependencyInjection\Compiler\AddSessionBagsPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\ConfigureFilesystemPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\CrawlerPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\DataContainerCallbackPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\IntlInstalledLocalesAndCountriesPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\LoggerChannelPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\MakeServicesPublicPass;
-use Contao\CoreBundle\DependencyInjection\Compiler\MapFragmentsToGlobalsPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\PickerProviderPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\RegisterFragmentsPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\RegisterHookListenersPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\RegisterPagesPass;
-use Contao\CoreBundle\DependencyInjection\Compiler\RemembermeServicesPass;
+use Contao\CoreBundle\DependencyInjection\Compiler\RewireTwigPathsPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\SearchIndexerPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\TaggedMigrationsPass;
 use Contao\CoreBundle\DependencyInjection\Compiler\TranslationDataCollectorPass;
@@ -38,21 +42,27 @@ use Contao\CoreBundle\Event\MenuEvent;
 use Contao\CoreBundle\Event\PreviewUrlConvertEvent;
 use Contao\CoreBundle\Event\PreviewUrlCreateEvent;
 use Contao\CoreBundle\Event\RobotsTxtEvent;
+use Contao\CoreBundle\Event\SitemapEvent;
 use Contao\CoreBundle\Event\SlugValidCharactersEvent;
 use Contao\CoreBundle\Fragment\Reference\ContentElementReference;
 use Contao\CoreBundle\Fragment\Reference\FrontendModuleReference;
-use Symfony\Bundle\SecurityBundle\DependencyInjection\SecurityExtension;
 use Symfony\Cmf\Component\Routing\DependencyInjection\Compiler\RegisterRouteEnhancersPass;
 use Symfony\Component\DependencyInjection\Compiler\PassConfig;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\EventDispatcher\DependencyInjection\AddEventAliasesPass;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Bundle\Bundle;
-use Symfony\Component\HttpKernel\DependencyInjection\FragmentRendererPass;
 
 class ContaoCoreBundle extends Bundle
 {
-    public const SCOPE_BACKEND = 'backend';
-    public const SCOPE_FRONTEND = 'frontend';
+    final public const SCOPE_BACKEND = 'backend';
+
+    final public const SCOPE_FRONTEND = 'frontend';
+
+    public function boot(): void
+    {
+        (new Request())->setFormat('turbo_stream', 'text/vnd.turbo-stream.html');
+    }
 
     public function getContainerExtension(): ContaoCoreExtension
     {
@@ -63,9 +73,8 @@ class ContaoCoreBundle extends Bundle
     {
         parent::build($container);
 
-        /** @var SecurityExtension $extension */
         $extension = $container->getExtension('security');
-        $extension->addSecurityListenerFactory(new ContaoLoginFactory());
+        $extension->addAuthenticatorFactory(new ContaoLoginFactory());
 
         $container->addCompilerPass(
             new AddEventAliasesPass([
@@ -74,23 +83,38 @@ class ContaoCoreBundle extends Bundle
                 PreviewUrlCreateEvent::class => ContaoCoreEvents::PREVIEW_URL_CREATE,
                 PreviewUrlConvertEvent::class => ContaoCoreEvents::PREVIEW_URL_CONVERT,
                 RobotsTxtEvent::class => ContaoCoreEvents::ROBOTS_TXT,
+                SitemapEvent::class => ContaoCoreEvents::SITEMAP,
                 SlugValidCharactersEvent::class => ContaoCoreEvents::SLUG_VALID_CHARACTERS,
-            ])
+            ]),
         );
 
         $container->addCompilerPass(new MakeServicesPublicPass());
-        $container->addCompilerPass(new AddPackagesPass());
         $container->addCompilerPass(new AddAssetsPackagesPass());
-        $container->addCompilerPass(new AddSessionBagsPass());
         $container->addCompilerPass(new AddResourcesPathsPass());
         $container->addCompilerPass(new TaggedMigrationsPass());
         $container->addCompilerPass(new PickerProviderPass());
-        $container->addCompilerPass(new RegisterPagesPass());
-        $container->addCompilerPass(new RegisterFragmentsPass(FrontendModuleReference::TAG_NAME));
-        $container->addCompilerPass(new RegisterFragmentsPass(ContentElementReference::TAG_NAME));
-        $container->addCompilerPass(new FragmentRendererPass('contao.fragment.handler'));
-        $container->addCompilerPass(new RemembermeServicesPass('contao_frontend'));
-        $container->addCompilerPass(new MapFragmentsToGlobalsPass());
+        $container->addCompilerPass(new RegisterPagesPass(), PassConfig::TYPE_BEFORE_OPTIMIZATION, 1);
+
+        $container->addCompilerPass(
+            new RegisterFragmentsPass(
+                FrontendModuleReference::TAG_NAME,
+                FrontendModuleReference::GLOBALS_KEY,
+                FrontendModuleReference::PROXY_CLASS,
+                'contao.listener.data_container.template_options',
+                'tl_module',
+            ),
+        );
+
+        $container->addCompilerPass(
+            new RegisterFragmentsPass(
+                ContentElementReference::TAG_NAME,
+                ContentElementReference::GLOBALS_KEY,
+                ContentElementReference::PROXY_CLASS,
+                'contao.listener.data_container.template_options',
+                'tl_content',
+            ),
+        );
+
         $container->addCompilerPass(new DataContainerCallbackPass());
         $container->addCompilerPass(new TranslationDataCollectorPass());
         $container->addCompilerPass(new RegisterHookListenersPass(), PassConfig::TYPE_OPTIMIZE);
@@ -99,5 +123,32 @@ class ContaoCoreBundle extends Bundle
         $container->addCompilerPass(new AddCronJobsPass());
         $container->addCompilerPass(new AddAvailableTransportsPass());
         $container->addCompilerPass(new RegisterRouteEnhancersPass('contao.routing.page_router', 'contao.page_router_enhancer'));
+        $container->addCompilerPass(new RewireTwigPathsPass());
+        $container->addCompilerPass(new AddNativeTransportFactoryPass());
+        $container->addCompilerPass(new IntlInstalledLocalesAndCountriesPass());
+        $container->addCompilerPass(new LoggerChannelPass(), PassConfig::TYPE_BEFORE_OPTIMIZATION, -1);
+        $container->addCompilerPass(new ConfigureFilesystemPass());
+        $container->addCompilerPass(new AddInsertTagsPass());
+        $container->addCompilerPass(new AccessDecisionStrategyPass());
+    }
+
+    public static function getVersion(): string
+    {
+        try {
+            $version = (string) InstalledVersions::getPrettyVersion('contao/core-bundle');
+        } catch (\OutOfBoundsException) {
+            $version = '';
+        }
+
+        if ('' === $version) {
+            $version = (string) InstalledVersions::getPrettyVersion('contao/contao');
+        }
+
+        return $version;
+    }
+
+    public function getPath(): string
+    {
+        return \dirname(__DIR__);
     }
 }

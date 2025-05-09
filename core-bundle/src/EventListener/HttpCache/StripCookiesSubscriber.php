@@ -17,9 +17,6 @@ use FOS\HttpCache\SymfonyCache\Events;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\Request;
 
-/**
- * @internal
- */
 class StripCookiesSubscriber implements EventSubscriberInterface
 {
     private const DENY_LIST = [
@@ -29,16 +26,20 @@ class StripCookiesSubscriber implements EventSubscriberInterface
         // Modals are always for JS only
         '(.*)?modal(.*)?',
 
-        // Google Analytics (https://developers.google.com/analytics/devguides/collection/analyticsjs/cookie-usage)
-        '_ga',
+        // Google Analytics
+        // https://developers.google.com/analytics/devguides/collection/analyticsjs/cookie-usage
+        '_ga.*',
         '_gid',
-        '_gat',
         '_dc_gtm_.+',
         'AMP_TOKEN',
-        '_gac_.+',
         '__utm.+',
 
-        // Matomo (https://matomo.org/faq/general/faq_146/)
+        // Google Conversion Linker
+        // https://support.google.com/tagmanager/answer/7549390
+        '_gcl.*',
+
+        // Matomo
+        // https://matomo.org/faq/general/faq_146/
         '_pk_id.*',
         '_pk_ref.*',
         '_pk_ses.*',
@@ -65,32 +66,18 @@ class StripCookiesSubscriber implements EventSubscriberInterface
 
         // Osano Cookie Consent
         'cookieconsent_status',
+
+        // Cookiebot Cookie Consent
+        'CookieConsent',
+
+        // Cypress
+        '__cypress_initial',
     ];
 
-    /**
-     * @var array
-     */
-    private $allowList;
+    private array $removeFromDenyList = [];
 
-    /**
-     * @var array
-     */
-    private $removeFromDenyList = [];
-
-    public function __construct(array $allowList = [])
+    public function __construct(private readonly array $allowList = [])
     {
-        $this->allowList = $allowList;
-    }
-
-    /**
-     * @deprecated Deprecated since Contao 4.10, to be removed in Contao 5.0; use the
-     *             getAllowList() method instead
-     */
-    public function getWhitelist(): array
-    {
-        trigger_deprecation('contao/core-bundle', '4.10', 'Using the "getWhitelist()" method has been deprecated and will no longer work in Contao 5.0. Use the "getAllowList()" method instead.');
-
-        return $this->getAllowList();
     }
 
     public function getAllowList(): array
@@ -114,7 +101,7 @@ class StripCookiesSubscriber implements EventSubscriberInterface
         }
 
         // Use a custom allow list if present, otherwise use the default deny list
-        if (0 !== \count($this->allowList)) {
+        if ($this->allowList) {
             $this->filterCookies($request, $this->allowList);
         } else {
             $this->filterCookies($request, $this->removeFromDenyList, self::DENY_LIST);
@@ -133,15 +120,11 @@ class StripCookiesSubscriber implements EventSubscriberInterface
         // Remove cookies that match the deny list or all if no deny list was set
         $removeCookies = preg_grep(
             '/^(?:'.implode(')$|^(?:', $denyList ?: ['.*']).')$/i',
-            array_keys($request->cookies->all())
+            array_keys($request->cookies->all()),
         );
 
         // Do not remove cookies that match the allow list
-        $removeCookies = preg_grep(
-            '/^(?:'.implode(')$|^(?:', $allowList).')$/i',
-            $removeCookies,
-            PREG_GREP_INVERT
-        );
+        $removeCookies = preg_grep('/^(?:'.implode(')$|^(?:', $allowList).')$/i', $removeCookies, PREG_GREP_INVERT);
 
         foreach ($removeCookies as $name) {
             $request->cookies->remove($name);

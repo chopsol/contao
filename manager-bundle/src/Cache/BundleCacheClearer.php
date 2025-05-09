@@ -13,20 +13,17 @@ declare(strict_types=1);
 namespace Contao\ManagerBundle\Cache;
 
 use Symfony\Component\Filesystem\Filesystem;
+use Symfony\Component\Filesystem\Path;
 use Symfony\Component\HttpKernel\CacheClearer\CacheClearerInterface;
-use Webmozart\PathUtil\Path;
 
 class BundleCacheClearer implements CacheClearerInterface
 {
-    /**
-     * @var Filesystem
-     */
-    private $filesystem;
+    private readonly Filesystem $filesystem;
 
     /**
-     * @internal Do not inherit from this class; decorate the "contao_manager.cache.clear_bundle" service instead
+     * @internal
      */
-    public function __construct(Filesystem $filesystem = null)
+    public function __construct(Filesystem|null $filesystem = null)
     {
         $this->filesystem = $filesystem ?: new Filesystem();
     }

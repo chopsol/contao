@@ -15,34 +15,24 @@ namespace Contao\NewsBundle\EventListener;
 use Contao\CoreBundle\Event\PreviewUrlCreateEvent;
 use Contao\CoreBundle\Framework\ContaoFramework;
 use Contao\NewsModel;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
 
 /**
  * @internal
  */
+#[AsEventListener]
 class PreviewUrlCreateListener
 {
-    /**
-     * @var RequestStack
-     */
-    private $requestStack;
-
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    public function __construct(RequestStack $requestStack, ContaoFramework $framework)
-    {
-        $this->requestStack = $requestStack;
-        $this->framework = $framework;
+    public function __construct(
+        private readonly RequestStack $requestStack,
+        private readonly ContaoFramework $framework,
+    ) {
     }
 
     /**
      * Adds the news ID to the front end preview URL.
-     *
-     * @throws \RuntimeException
      */
     public function __invoke(PreviewUrlCreateEvent $event): void
     {
@@ -50,9 +40,7 @@ class PreviewUrlCreateListener
             return;
         }
 
-        $request = $this->requestStack->getCurrentRequest();
-
-        if (null === $request) {
+        if (!$request = $this->requestStack->getCurrentRequest()) {
             throw new \RuntimeException('The request stack did not contain a request');
         }
 
@@ -61,17 +49,14 @@ class PreviewUrlCreateListener
             return;
         }
 
-        if (null === ($newsModel = $this->getNewsModel($this->getId($event, $request)))) {
+        if ((!$id = $this->getId($event, $request)) || (!$newsModel = $this->getNewsModel($id))) {
             return;
         }
 
         $event->setQuery('news='.$newsModel->id);
     }
 
-    /**
-     * @return int|string
-     */
-    private function getId(PreviewUrlCreateEvent $event, Request $request)
+    private function getId(PreviewUrlCreateEvent $event, Request $request): int|string
     {
         // Overwrite the ID if the news settings are edited
         if ('tl_news' === $request->query->get('table') && 'edit' === $request->query->get('act')) {
@@ -81,14 +66,8 @@ class PreviewUrlCreateListener
         return $event->getId();
     }
 
-    /**
-     * @param int|string $id
-     */
-    private function getNewsModel($id): ?NewsModel
+    private function getNewsModel(int|string $id): NewsModel|null
     {
-        /** @var NewsModel $adapter */
-        $adapter = $this->framework->getAdapter(NewsModel::class);
-
-        return $adapter->findByPk($id);
+        return $this->framework->getAdapter(NewsModel::class)->findById($id);
     }
 }

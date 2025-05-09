@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Crawl\Escargot\Subscriber;
 
+use Nyholm\Psr7\Uri;
 use Psr\Log\LoggerAwareInterface;
 use Psr\Log\LoggerAwareTrait;
 use Psr\Log\LogLevel;
@@ -33,21 +34,12 @@ class BrokenLinkCheckerSubscriber implements EscargotSubscriberInterface, Escarg
     use LoggerAwareTrait;
     use SubscriberLoggerTrait;
 
-    public const TAG_SKIP = 'skip-broken-link-checker';
+    final public const TAG_SKIP = 'skip-broken-link-checker';
 
-    /**
-     * @var TranslatorInterface
-     */
-    private $translator;
+    private array $stats = ['ok' => 0, 'error' => 0];
 
-    /**
-     * @var array
-     */
-    private $stats = ['ok' => 0, 'error' => 0];
-
-    public function __construct(TranslatorInterface $translator)
+    public function __construct(private readonly TranslatorInterface $translator)
     {
-        $this->translator = $translator;
     }
 
     public function getName(): string
@@ -61,7 +53,7 @@ class BrokenLinkCheckerSubscriber implements EscargotSubscriberInterface, Escarg
             $this->logWithCrawlUri(
                 $crawlUri,
                 LogLevel::DEBUG,
-                'Did not check because it was marked to be skipped using the data-skip-broken-link-checker attribute.'
+                'Did not check because it was marked to be skipped using the data-skip-broken-link-checker attribute.',
             );
 
             return SubscriberInterface::DECISION_NEGATIVE;
@@ -70,7 +62,7 @@ class BrokenLinkCheckerSubscriber implements EscargotSubscriberInterface, Escarg
         // Only check URIs that are part of our base collection or were found on one
         $fromBaseUriCollection = $this->escargot->getBaseUris()->containsHost($crawlUri->getUri()->getHost());
 
-        $foundOnBaseUriCollection = null !== $crawlUri->getFoundOn()
+        $foundOnBaseUriCollection = $crawlUri->getFoundOn()
             && ($originalCrawlUri = $this->escargot->getCrawlUri($crawlUri->getFoundOn()))
             && $this->escargot->getBaseUris()->containsHost($originalCrawlUri->getUri()->getHost());
 
@@ -78,7 +70,7 @@ class BrokenLinkCheckerSubscriber implements EscargotSubscriberInterface, Escarg
             $this->logWithCrawlUri(
                 $crawlUri,
                 LogLevel::DEBUG,
-                'Did not check because it is not part of the base URI collection or was not found on one of that is.'
+                'Did not check because it is not part of the base URI collection or was not found on one of that is.',
             );
 
             return SubscriberInterface::DECISION_NEGATIVE;
@@ -90,16 +82,25 @@ class BrokenLinkCheckerSubscriber implements EscargotSubscriberInterface, Escarg
 
     public function needsContent(CrawlUri $crawlUri, ResponseInterface $response, ChunkInterface $chunk): string
     {
-        if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 400) {
-            $this->logError($crawlUri, 'HTTP Status Code: '.$response->getStatusCode());
+        $statusCode = $response->getStatusCode();
+
+        if ($statusCode < 200 || $statusCode >= 400) {
+            $this->logError($crawlUri, 'HTTP Status Code: '.$statusCode);
 
             return SubscriberInterface::DECISION_NEGATIVE;
         }
 
         ++$this->stats['ok'];
 
-        // When URI is part of the base uri collection, request content.
-        // This is needed to make sure HtmlCrawlerSubscriber::onLastChunk() is triggered.
+        // Skip any redirected URLs that are now outside our base hosts (#4213)
+        $actualHost = (new Uri($response->getInfo('url')))->getHost();
+
+        if ($crawlUri->getUri()->getHost() !== $actualHost && !$this->escargot->getBaseUris()->containsHost($actualHost)) {
+            return SubscriberInterface::DECISION_NEGATIVE;
+        }
+
+        // When URI is part of the base uri collection, request content. This is needed
+        // to make sure HtmlCrawlerSubscriber::onLastChunk() is triggered.
         if ($this->escargot->getBaseUris()->containsHost($crawlUri->getUri()->getHost())) {
             return SubscriberInterface::DECISION_POSITIVE;
         }
@@ -112,18 +113,18 @@ class BrokenLinkCheckerSubscriber implements EscargotSubscriberInterface, Escarg
         // noop
     }
 
-    public function getResult(SubscriberResult $previousResult = null): SubscriberResult
+    public function getResult(SubscriberResult|null $previousResult = null): SubscriberResult
     {
         $stats = $this->stats;
 
-        if (null !== $previousResult) {
+        if ($previousResult) {
             $stats['ok'] += $previousResult->getInfo('stats')['ok'];
             $stats['error'] += $previousResult->getInfo('stats')['error'];
         }
 
         $result = new SubscriberResult(
             0 === $stats['error'],
-            $this->translator->trans('CRAWL.brokenLinkChecker.summary', [$stats['ok'], $stats['error']], 'contao_default')
+            $this->translator->trans('CRAWL.brokenLinkChecker.summary', [$stats['ok'], $stats['error']], 'contao_default'),
         );
 
         $result->addInfo('stats', $stats);
@@ -145,6 +146,6 @@ class BrokenLinkCheckerSubscriber implements EscargotSubscriberInterface, Escarg
     {
         ++$this->stats['error'];
 
-        $this->logWithCrawlUri($crawlUri, LogLevel::ERROR, sprintf('Broken link! %s.', $message));
+        $this->logWithCrawlUri($crawlUri, LogLevel::ERROR, \sprintf('Broken link! %s.', $message));
     }
 }

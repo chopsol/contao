@@ -17,6 +17,7 @@ use Contao\CoreBundle\Config\ResourceFinderInterface;
 use Contao\CoreBundle\Event\ContaoCoreEvents;
 use Contao\CoreBundle\Event\GenerateSymlinksEvent;
 use Contao\CoreBundle\Util\SymlinkUtil;
+use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
@@ -24,85 +25,44 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\Filesystem\Filesystem;
+use Symfony\Component\Filesystem\Path;
 use Symfony\Component\Finder\Finder;
 use Symfony\Component\Finder\SplFileInfo;
-use Webmozart\PathUtil\Path;
 
-/**
- * Symlinks the public resources into the web directory.
- *
- * @internal
- */
+#[AsCommand(
+    name: 'contao:symlinks',
+    description: 'Symlinks the public resources into the public directory.',
+)]
 class SymlinksCommand extends Command
 {
-    protected static $defaultName = 'contao:symlinks';
+    private array $rows = [];
 
-    /**
-     * @var array
-     */
-    private $rows = [];
+    private string|null $webDir = null;
 
-    /**
-     * @var string
-     */
-    private $projectDir;
+    private int $statusCode = Command::SUCCESS;
 
-    /**
-     * @var string
-     */
-    private $webDir;
-
-    /**
-     * @var string
-     */
-    private $uploadPath;
-
-    /**
-     * @var string
-     */
-    private $logsDir;
-
-    /**
-     * @var ResourceFinderInterface
-     */
-    private $resourceFinder;
-
-    /**
-     * @var EventDispatcherInterface
-     */
-    private $eventDispatcher;
-
-    /**
-     * @var int
-     */
-    private $statusCode = 0;
-
-    public function __construct(string $projectDir, string $uploadPath, string $logsDir, ResourceFinderInterface $resourceFinder, EventDispatcherInterface $eventDispatcher)
-    {
-        $this->projectDir = $projectDir;
-        $this->uploadPath = $uploadPath;
-        $this->logsDir = $logsDir;
-        $this->resourceFinder = $resourceFinder;
-        $this->eventDispatcher = $eventDispatcher;
-
+    public function __construct(
+        private readonly string $projectDir,
+        private readonly string $uploadPath,
+        private readonly string $logsDir,
+        private readonly ResourceFinderInterface $resourceFinder,
+        private readonly EventDispatcherInterface $eventDispatcher,
+    ) {
         parent::__construct();
     }
 
     protected function configure(): void
     {
-        $this
-            ->addArgument('target', InputArgument::OPTIONAL, 'The target directory', 'web')
-            ->setDescription('Symlinks the public resources into the web directory.')
-        ;
+        $this->addArgument('target', InputArgument::OPTIONAL, 'The target directory');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $this->webDir = $input->getArgument('target');
+        $this->webDir = $input->getArgument('target') ?? 'public';
 
         $this->generateSymlinks();
 
-        if (!empty($this->rows)) {
+        if ($this->rows) {
             $io = new SymfonyStyle($input, $output);
             $io->newLine();
             $io->table(['', 'Symlink', 'Target / Error'], $this->rows);
@@ -134,6 +94,14 @@ class SymlinksCommand extends Command
         // Symlinks the logs directory
         $this->symlink($this->getRelativePath($this->logsDir), 'system/logs');
 
+        // Symlink the highlight.php styles
+        if ($fs->exists(Path::join($this->projectDir, 'vendor/scrivo/highlight.php/styles'))) {
+            $this->symlink(
+                'vendor/scrivo/highlight.php/styles',
+                Path::join($this->webDir, 'vendor/scrivo/highlight_php/styles'),
+            );
+        }
+
         $this->triggerSymlinkEvent();
     }
 
@@ -141,25 +109,22 @@ class SymlinksCommand extends Command
     {
         $this->createSymlinksFromFinder(
             $this->findIn(Path::join($this->projectDir, $uploadPath))->files()->depth('> 0')->name('.public'),
-            $uploadPath
+            $uploadPath,
         );
     }
 
     private function symlinkModules(): void
     {
-        $filter = static function (SplFileInfo $file): bool {
-            return HtaccessAnalyzer::create($file)->grantsAccess();
-        };
+        $filter = static fn (SplFileInfo $file): bool => HtaccessAnalyzer::create($file)->grantsAccess();
 
         $this->createSymlinksFromFinder(
             $this->findIn(Path::join($this->projectDir, 'system/modules'))->files()->filter($filter)->name('.htaccess'),
-            'system/modules'
+            'system/modules',
         );
     }
 
     private function symlinkThemes(): void
     {
-        /** @var array<SplFileInfo> $themes */
         $themes = $this->resourceFinder->findIn('themes')->depth(0)->directories();
 
         foreach ($themes as $theme) {
@@ -169,7 +134,7 @@ class SymlinksCommand extends Command
                 continue;
             }
 
-            $this->symlink($path, Path::join('system/themes', Path::getFilename($path)));
+            $this->symlink($path, Path::join('system/themes', basename($path)));
         }
     }
 
@@ -204,23 +169,23 @@ class SymlinksCommand extends Command
             SymlinkUtil::symlink($target, $link, $this->projectDir);
 
             $this->rows[] = [
-                sprintf(
+                \sprintf(
                     '<fg=green;options=bold>%s</>',
-                    '\\' === \DIRECTORY_SEPARATOR ? 'OK' : "\xE2\x9C\x94" // HEAVY CHECK MARK (U+2714)
+                    '\\' === \DIRECTORY_SEPARATOR ? 'OK' : "\xE2\x9C\x94", // HEAVY CHECK MARK (U+2714)
                 ),
                 $link,
                 $target,
             ];
         } catch (\Exception $e) {
-            $this->statusCode = 1;
+            $this->statusCode = Command::FAILURE;
 
             $this->rows[] = [
-                sprintf(
+                \sprintf(
                     '<fg=red;options=bold>%s</>',
-                    '\\' === \DIRECTORY_SEPARATOR ? 'ERROR' : "\xE2\x9C\x98" // HEAVY BALLOT X (U+2718)
+                    '\\' === \DIRECTORY_SEPARATOR ? 'ERROR' : "\xE2\x9C\x98", // HEAVY BALLOT X (U+2718)
                 ),
                 $link,
-                sprintf('<error>%s</error>', $e->getMessage()),
+                \sprintf('<error>%s</error>', $e->getMessage()),
             ];
         }
     }
@@ -238,7 +203,7 @@ class SymlinksCommand extends Command
                     $countB = substr_count(Path::normalize($b->getRelativePath()), '/');
 
                     return $countA <=> $countB;
-                }
+                },
             )
             ->followLinks()
             ->in($path)
@@ -252,13 +217,12 @@ class SymlinksCommand extends Command
      */
     private function filterNestedPaths(Finder $finder, string $prepend): array
     {
+        /** @var array<string, SplFileInfo> $files */
         $files = iterator_to_array($finder);
 
-        /** @var SplFileInfo $file */
         foreach ($files as $key => $file) {
             $path = $file->getRelativePath();
 
-            /** @var SplFileInfo $otherFile */
             foreach ($files as $otherFile) {
                 $otherPath = $otherFile->getRelativePath();
 
@@ -269,12 +233,9 @@ class SymlinksCommand extends Command
                 unset($files[$key]);
 
                 $this->rows[] = [
-                    sprintf(
-                        '<fg=yellow;options=bold>%s</>',
-                        '\\' === \DIRECTORY_SEPARATOR ? 'WARNING' : '!'
-                    ),
+                    \sprintf('<fg=yellow;options=bold>%s</>', '\\' === \DIRECTORY_SEPARATOR ? 'WARNING' : '!'),
                     Path::join($this->webDir, $prepend, $path),
-                    sprintf('<comment>Skipped because %s will be symlinked.</comment>', Path::join($prepend, $otherPath)),
+                    \sprintf('<comment>Skipped because %s will be symlinked.</comment>', Path::join($prepend, $otherPath)),
                 ];
             }
         }

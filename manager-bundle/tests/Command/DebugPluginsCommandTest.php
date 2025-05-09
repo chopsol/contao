@@ -20,12 +20,22 @@ use Contao\ManagerBundle\Tests\Fixtures\ContaoManager\Plugin as FixturesPlugin;
 use Contao\ManagerPlugin\PluginLoader;
 use Contao\NewsBundle\ContaoNewsBundle;
 use Contao\TestCase\ContaoTestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Symfony\Component\Console\Helper\Table;
+use Symfony\Component\Console\Terminal;
 use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\Filesystem\Filesystem;
 
 class DebugPluginsCommandTest extends ContaoTestCase
 {
+    protected function tearDown(): void
+    {
+        $this->resetStaticProperties([Table::class, Terminal::class]);
+
+        parent::tearDown();
+    }
+
     public function testNameAndArguments(): void
     {
         $command = new DebugPluginsCommand($this->getKernel([]));
@@ -35,9 +45,7 @@ class DebugPluginsCommandTest extends ContaoTestCase
         $this->assertTrue($command->getDefinition()->hasOption('bundles'));
     }
 
-    /**
-     * @dataProvider commandOutputProvider
-     */
+    #[DataProvider('commandOutputProvider')]
     public function testCommandOutput(array $plugins, array $bundles, array $arguments, string $expectedOutput): void
     {
         $command = new DebugPluginsCommand($this->getKernel($plugins, $bundles));
@@ -48,7 +56,7 @@ class DebugPluginsCommandTest extends ContaoTestCase
         $this->assertStringContainsString($expectedOutput, $commandTester->getDisplay(true));
     }
 
-    public function commandOutputProvider(): \Generator
+    public static function commandOutputProvider(): iterable
     {
         yield 'Lists the test plugin' => [
             ['foo/bar-bundle' => new FixturesPlugin()],
@@ -93,7 +101,7 @@ class DebugPluginsCommandTest extends ContaoTestCase
 
         $this->assertSame(
             '[ERROR] The "Contao\ManagerBundle\Tests\Fixtures\ContaoManager\Plugin" plugin does not implement the "Contao\ManagerPlugin\Bundle\BundlePluginInterface" interface.',
-            $this->normalizeDisplay($commandTester->getDisplay(true))
+            $this->normalizeDisplay($commandTester->getDisplay(true)),
         );
     }
 
@@ -108,7 +116,7 @@ class DebugPluginsCommandTest extends ContaoTestCase
 
         $this->assertSame(
             '[ERROR] No plugin with the class or package name "foo/baz-bundle" found.',
-            $this->normalizeDisplay($commandTester->getDisplay(true))
+            $this->normalizeDisplay($commandTester->getDisplay(true)),
         );
     }
 
@@ -120,7 +128,7 @@ class DebugPluginsCommandTest extends ContaoTestCase
 
         $pluginLoader = $this->createMock(PluginLoader::class);
         $pluginLoader
-            ->expects(0 === \count($plugins) ? $this->never() : $this->once())
+            ->expects($plugins ? $this->once() : $this->never())
             ->method('getInstances')
             ->willReturn($plugins)
         ;

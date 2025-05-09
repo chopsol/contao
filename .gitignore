@@ -2,15 +2,18 @@
 /composer.lock
 /vendor/
 
+# Composer bin
+/vendor-bin/*/vendor/
+
 # Monorepo Tools
 /.monorepo-split-cache/
 
 # Node
 /node_modules/
 
-# PhpUnit
-/.phpunit.result.cache
-/phpunit.xml
+# Cypress
+/cypress/
 
-# CS fixer
-/.php_cs.cache
+# PhpUnit
+/.phpunit.cache/
+/phpunit.xml

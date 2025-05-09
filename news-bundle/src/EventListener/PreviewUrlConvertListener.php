@@ -14,20 +14,22 @@ namespace Contao\NewsBundle\EventListener;
 
 use Contao\CoreBundle\Event\PreviewUrlConvertEvent;
 use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\News;
+use Contao\CoreBundle\Routing\ContentUrlGenerator;
 use Contao\NewsModel;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 
 /**
  * @internal
  */
+#[AsEventListener]
 class PreviewUrlConvertListener
 {
-    private $framework;
-
-    public function __construct(ContaoFramework $framework)
-    {
-        $this->framework = $framework;
+    public function __construct(
+        private readonly ContaoFramework $framework,
+        private readonly ContentUrlGenerator $urlGenerator,
+    ) {
     }
 
     /**
@@ -39,27 +41,19 @@ class PreviewUrlConvertListener
             return;
         }
 
-        $request = $event->getRequest();
-
-        if (null === $request || null === ($news = $this->getNewsModel($request))) {
+        if (!$news = $this->getNewsModel($event->getRequest())) {
             return;
         }
 
-        /** @var News $newsAdapter */
-        $newsAdapter = $this->framework->getAdapter(News::class);
-
-        $event->setUrl($newsAdapter->generateNewsUrl($news, false, true));
+        $event->setUrl($this->urlGenerator->generate($news, [], UrlGeneratorInterface::ABSOLUTE_URL));
     }
 
-    private function getNewsModel(Request $request): ?NewsModel
+    private function getNewsModel(Request $request): NewsModel|null
     {
         if (!$request->query->has('news')) {
             return null;
         }
 
-        /** @var NewsModel $adapter */
-        $adapter = $this->framework->getAdapter(NewsModel::class);
-
-        return $adapter->findByPk($request->query->get('news'));
+        return $this->framework->getAdapter(NewsModel::class)->findById($request->query->get('news'));
     }
 }

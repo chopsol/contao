@@ -14,20 +14,17 @@ namespace Contao\CoreBundle\Tests\HttpKernel\Bundle;
 
 use Contao\CoreBundle\HttpKernel\Bundle\ContaoModuleBundle;
 use Contao\CoreBundle\Tests\TestCase;
-use Webmozart\PathUtil\Path;
+use Symfony\Component\Filesystem\Path;
 
 class ContaoModuleBundleTest extends TestCase
 {
-    /**
-     * @var ContaoModuleBundle
-     */
-    private $bundle;
+    private ContaoModuleBundle $bundle;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->bundle = new ContaoModuleBundle('foobar', Path::normalize($this->getFixturesDir()).'/app');
+        $this->bundle = new ContaoModuleBundle('foobar', Path::normalize($this->getFixturesDir()));
     }
 
     public function testReturnsTheModulePath(): void
@@ -39,6 +36,6 @@ class ContaoModuleBundleTest extends TestCase
     {
         $this->expectException('LogicException');
 
-        $this->bundle = new ContaoModuleBundle('invalid', $this->getFixturesDir().'/app');
+        $this->bundle = new ContaoModuleBundle('invalid', $this->getFixturesDir());
     }
 }

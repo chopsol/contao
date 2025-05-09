@@ -12,69 +12,113 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\Controller\ContentElement;
 
+use Contao\Config;
 use Contao\ContentModel;
+use Contao\CoreBundle\Cache\CacheTagManager;
 use Contao\CoreBundle\Fixtures\Controller\ContentElement\TestController;
 use Contao\CoreBundle\Fixtures\Controller\ContentElement\TestSharedMaxAgeController;
+use Contao\CoreBundle\Routing\ScopeMatcher;
 use Contao\CoreBundle\Tests\TestCase;
-use Contao\FrontendTemplate;
+use Contao\CoreBundle\Twig\Loader\ContaoFilesystemLoader;
 use Contao\System;
-use FOS\HttpCache\ResponseTagger;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\RequestStack;
 
 class ContentElementControllerTest extends TestCase
 {
+    private ContainerBuilder $container;
+
     protected function setUp(): void
     {
         parent::setUp();
 
-        System::setContainer($this->getContainerWithContaoConfiguration());
+        $this->container = $this->getContainerWithContaoConfiguration();
+        $this->container->set('contao.cache.tag_manager', $this->createMock(CacheTagManager::class));
+        $this->container->set('contao.twig.filesystem_loader', $this->createMock(ContaoFilesystemLoader::class));
+
+        System::setContainer($this->container);
+    }
+
+    protected function tearDown(): void
+    {
+        unset($GLOBALS['TL_MIME']);
+
+        $this->resetStaticProperties([System::class, Config::class]);
+
+        parent::tearDown();
     }
 
     public function testCreatesTheTemplateFromTheClassName(): void
     {
-        $controller = new TestController();
-        $controller->setContainer($this->mockContainerWithFrameworkTemplate('ce_test'));
+        $controller = $this->getTestController();
 
-        $controller(new Request(), new ContentModel(), 'main');
+        $response = $controller(new Request(), $this->mockClassWithProperties(ContentModel::class), 'main');
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame('ce_test', $template['templateName']);
     }
 
     public function testCreatesTheTemplateFromTheTypeFragmentOptions(): void
     {
-        $controller = new TestController();
-        $controller->setContainer($this->mockContainerWithFrameworkTemplate('ce_foo'));
-        $controller->setFragmentOptions(['type' => 'foo']);
+        $controller = $this->getTestController(['type' => 'foo']);
 
-        $controller(new Request(), new ContentModel(), 'main');
+        $response = $controller(new Request(), $this->mockClassWithProperties(ContentModel::class), 'main');
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame('ce_foo', $template['templateName']);
     }
 
     public function testCreatesTheTemplateFromTheTemplateFragmentOption(): void
     {
-        $controller = new TestController();
-        $controller->setContainer($this->mockContainerWithFrameworkTemplate('ce_bar'));
-        $controller->setFragmentOptions(['template' => 'ce_bar']);
+        $controller = $this->getTestController(['template' => 'ce_bar']);
 
-        $controller(new Request(), new ContentModel(), 'main');
+        $response = $controller(new Request(), $this->mockClassWithProperties(ContentModel::class), 'main');
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame('ce_bar', $template['templateName']);
     }
 
-    public function testCreatesTheTemplateFromCustomTpl(): void
+    public function testCreatesTheTemplateFromACustomTpl(): void
     {
-        $model = new ContentModel();
-        $model->customTpl = 'ce_bar';
+        $this->container->set('request_stack', new RequestStack());
 
-        $controller = new TestController();
-        $controller->setContainer($this->mockContainerWithFrameworkTemplate('ce_bar'));
+        $controller = $this->getTestController(['template' => 'ce_bar']);
 
-        $controller(new Request(), $model, 'main');
+        $model = $this->mockClassWithProperties(ContentModel::class, ['customTpl' => 'ce_bar']);
+
+        $response = $controller(new Request(), $model, 'main');
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame('ce_bar', $template['templateName']);
+    }
+
+    public function testDoesNotCreateTheTemplateFromACustomTplInTheBackend(): void
+    {
+        $request = new Request([], [], ['_scope' => 'backend']);
+        $requestStack = new RequestStack();
+        $requestStack->push($request);
+
+        $this->container->set('request_stack', $requestStack);
+        $this->container->set('contao.routing.scope_matcher', $this->mockScopeMatcher());
+
+        $controller = $this->getTestController();
+
+        $model = $this->mockClassWithProperties(ContentModel::class, ['customTpl' => 'ce_bar']);
+
+        $response = $controller($request, $model, 'main');
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame('ce_test', $template['templateName']);
     }
 
     public function testSetsTheClassFromTheType(): void
     {
-        $controller = new TestController();
-        $controller->setContainer($this->mockContainerWithFrameworkTemplate('ce_test'));
+        $controller = $this->getTestController();
 
-        $response = $controller(new Request(), new ContentModel(), 'main');
-        $template = json_decode($response->getContent(), true);
+        $response = $controller(new Request(), $this->mockClassWithProperties(ContentModel::class), 'main');
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
 
         $this->assertSame('', $template['cssID']);
         $this->assertSame('ce_test', $template['class']);
@@ -82,14 +126,12 @@ class ContentElementControllerTest extends TestCase
 
     public function testSetsTheHeadlineFromTheModel(): void
     {
-        $model = new ContentModel();
-        $model->headline = serialize(['unit' => 'h6', 'value' => 'foobar']);
+        $controller = $this->getTestController();
 
-        $controller = new TestController();
-        $controller->setContainer($this->mockContainerWithFrameworkTemplate('ce_test'));
+        $model = $this->mockClassWithProperties(ContentModel::class, ['headline' => serialize(['unit' => 'h6', 'value' => 'foobar'])]);
 
         $response = $controller(new Request(), $model, 'main');
-        $template = json_decode($response->getContent(), true);
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
 
         $this->assertSame('foobar', $template['headline']);
         $this->assertSame('h6', $template['hl']);
@@ -97,14 +139,12 @@ class ContentElementControllerTest extends TestCase
 
     public function testSetsTheCssIdAndClassFromTheModel(): void
     {
-        $model = new ContentModel();
-        $model->cssID = serialize(['foo', 'bar']);
+        $controller = $this->getTestController();
 
-        $controller = new TestController();
-        $controller->setContainer($this->mockContainerWithFrameworkTemplate('ce_test'));
+        $model = $this->mockClassWithProperties(ContentModel::class, ['cssID' => serialize(['foo', 'bar'])]);
 
         $response = $controller(new Request(), $model, 'main');
-        $template = json_decode($response->getContent(), true);
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
 
         $this->assertSame(' id="foo"', $template['cssID']);
         $this->assertSame('ce_test bar', $template['class']);
@@ -112,43 +152,91 @@ class ContentElementControllerTest extends TestCase
 
     public function testSetsTheLayoutSection(): void
     {
-        $controller = new TestController();
-        $controller->setContainer($this->mockContainerWithFrameworkTemplate('ce_test'));
+        $controller = $this->getTestController();
 
-        $response = $controller(new Request(), new ContentModel(), 'left');
-        $template = json_decode($response->getContent(), true);
+        $response = $controller(new Request(), $this->mockClassWithProperties(ContentModel::class), 'left');
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
 
         $this->assertSame('left', $template['inColumn']);
     }
 
     public function testSetsTheClasses(): void
     {
-        $controller = new TestController();
-        $controller->setContainer($this->mockContainerWithFrameworkTemplate('ce_test'));
+        $controller = $this->getTestController();
 
-        $response = $controller(new Request(), new ContentModel(), 'main', ['first', 'last']);
-        $template = json_decode($response->getContent(), true);
+        $response = $controller(new Request(), $this->mockClassWithProperties(ContentModel::class), 'main', ['foo', 'bar']);
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
 
-        $this->assertSame('ce_test first last', $template['class']);
+        $this->assertSame('ce_test foo bar', $template['class']);
+    }
+
+    #[DataProvider('provideScope')]
+    public function testSetsTemplateContextForModernFragments(bool $backendScope): void
+    {
+        $filesystemLoader = $this->createMock(ContaoFilesystemLoader::class);
+        $filesystemLoader
+            ->expects($this->once())
+            ->method('exists')
+            ->with('@Contao/content_element/text.html.twig')
+            ->willReturn(true)
+        ;
+
+        $requestStack = $this->createMock(RequestStack::class);
+        $requestStack
+            ->method('getCurrentRequest')
+            ->willReturn($this->createMock(Request::class))
+        ;
+
+        $scopeMatcher = $this->createMock(ScopeMatcher::class);
+        $scopeMatcher
+            ->method('isBackendRequest')
+            ->willReturn($backendScope)
+        ;
+
+        $this->container->set('request_stack', $requestStack);
+        $this->container->set('contao.twig.filesystem_loader', $filesystemLoader);
+        $this->container->set('contao.routing.scope_matcher', $scopeMatcher);
+
+        $controller = $this->getTestController(['type' => 'text', 'template' => 'content_element/text']);
+
+        $model = $this->mockClassWithProperties(ContentModel::class, [
+            'headline' => serialize(['value' => 'foo', 'unit' => 'h3']),
+            'cssID' => serialize(['foo-id', 'foo-class']),
+        ]);
+
+        $response = $controller(new Request(), $model, 'main', ['bar-class', 'baz-class']);
+        $template = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame('text', $template['type']);
+        $this->assertSame('content_element/text', $template['template']);
+        $this->assertSame($backendScope, $template['as_editor_view']);
+        $this->assertSame('main', $template['section']);
+        $this->assertSame('foo-id', $template['element_html_id']);
+        $this->assertSame('foo-class bar-class baz-class', $template['element_css_classes']);
+        $this->assertSame(['text' => 'foo', 'tag_name' => 'h3'], $template['headline']);
+        $this->assertSame($model->row(), $template['data']);
+    }
+
+    public static function provideScope(): iterable
+    {
+        yield 'frontend' => [false];
+        yield 'backend' => [true];
     }
 
     public function testAddsTheCacheTags(): void
     {
-        $model = new ContentModel();
-        $model->id = 42;
+        $model = $this->mockClassWithProperties(ContentModel::class, ['id' => 42]);
 
-        $responseTagger = $this->createMock(ResponseTagger::class);
-        $responseTagger
+        $cacheTagManager = $this->createMock(CacheTagManager::class);
+        $cacheTagManager
             ->expects($this->once())
-            ->method('addTags')
-            ->with(['contao.db.tl_content.42'])
+            ->method('tagWith')
+            ->with($model)
         ;
 
-        $container = $this->mockContainerWithFrameworkTemplate('ce_test');
-        $container->set('fos_http_cache.http.symfony_response_tagger', $responseTagger);
+        $this->container->set('contao.cache.tag_manager', $cacheTagManager);
 
-        $controller = new TestController();
-        $controller->setContainer($container);
+        $controller = $this->getTestController();
 
         $controller(new Request(), $model, 'main');
     }
@@ -159,13 +247,10 @@ class ContentElementControllerTest extends TestCase
         $start = strtotime('+2 weeks', $time);
         $expires = $start - $time;
 
-        $model = new ContentModel();
-        $model->start = (string) $start;
-
-        $container = $this->mockContainerWithFrameworkTemplate('ce_test_shared_max_age');
+        $model = $this->mockClassWithProperties(ContentModel::class, ['start' => (string) $start]);
 
         $controller = new TestSharedMaxAgeController();
-        $controller->setContainer($container);
+        $controller->setContainer($this->container);
 
         $response = $controller(new Request(), $model, 'main');
 
@@ -178,13 +263,10 @@ class ContentElementControllerTest extends TestCase
         $stop = strtotime('+2 weeks', $time);
         $expires = $stop - $time;
 
-        $model = new ContentModel();
-        $model->stop = (string) $stop;
-
-        $container = $this->mockContainerWithFrameworkTemplate('ce_test_shared_max_age');
+        $model = $this->mockClassWithProperties(ContentModel::class, ['stop' => (string) $stop]);
 
         $controller = new TestSharedMaxAgeController();
-        $controller->setContainer($container);
+        $controller->setContainer($this->container);
 
         $response = $controller(new Request(), $model, 'main');
 
@@ -193,29 +275,21 @@ class ContentElementControllerTest extends TestCase
 
     public function testDoesNotSetTheSharedMaxAgeIfTheElementHasNeitherAStartNorAStopDate(): void
     {
-        $container = $this->mockContainerWithFrameworkTemplate('ce_test_shared_max_age');
-
         $controller = new TestSharedMaxAgeController();
-        $controller->setContainer($container);
+        $controller->setContainer($this->container);
 
-        $response = $controller(new Request(), new ContentModel(), 'main');
+        $response = $controller(new Request(), $this->mockClassWithProperties(ContentModel::class), 'main');
 
         $this->assertNull($response->getMaxAge());
     }
 
-    private function mockContainerWithFrameworkTemplate(string $templateName): ContainerBuilder
+    private function getTestController(array $fragmentOptions = []): TestController
     {
-        $framework = $this->mockContaoFramework();
-        $framework
-            ->expects($this->once())
-            ->method('createInstance')
-            ->with(FrontendTemplate::class, [$templateName])
-            ->willReturn(new FrontendTemplate())
-        ;
+        $controller = new TestController();
 
-        $container = new ContainerBuilder();
-        $container->set('contao.framework', $framework);
+        $controller->setContainer($this->container);
+        $controller->setFragmentOptions($fragmentOptions);
 
-        return $container;
+        return $controller;
     }
 }

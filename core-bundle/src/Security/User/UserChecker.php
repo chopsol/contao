@@ -14,7 +14,6 @@ namespace Contao\CoreBundle\Security\User;
 
 use Contao\Config;
 use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\CoreBundle\Security\Exception\LockedException;
 use Contao\Date;
 use Contao\FrontendUser;
 use Contao\User;
@@ -25,16 +24,10 @@ use Symfony\Component\Security\Core\User\UserInterface;
 class UserChecker implements UserCheckerInterface
 {
     /**
-     * @var ContaoFramework
+     * @internal
      */
-    private $framework;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.security.user_checker" service instead
-     */
-    public function __construct(ContaoFramework $framework)
+    public function __construct(private readonly ContaoFramework $framework)
     {
-        $this->framework = $framework;
     }
 
     public function checkPreAuth(UserInterface $user): void
@@ -43,7 +36,6 @@ class UserChecker implements UserCheckerInterface
             return;
         }
 
-        $this->checkIfAccountIsLocked($user);
         $this->checkIfAccountIsDisabled($user);
         $this->checkIfLoginIsAllowed($user);
         $this->checkIfAccountIsActive($user);
@@ -51,27 +43,6 @@ class UserChecker implements UserCheckerInterface
 
     public function checkPostAuth(UserInterface $user): void
     {
-    }
-
-    /**
-     * @throws LockedException
-     */
-    private function checkIfAccountIsLocked(User $user): void
-    {
-        $lockedSeconds = $user->locked - time();
-
-        if ($lockedSeconds <= 0) {
-            return;
-        }
-
-        $ex = new LockedException(
-            $lockedSeconds,
-            sprintf('User "%s" is still locked for %s seconds', $user->username, $lockedSeconds)
-        );
-
-        $ex->setUser($user);
-
-        throw $ex;
     }
 
     private function checkIfAccountIsDisabled(User $user): void
@@ -87,7 +58,7 @@ class UserChecker implements UserCheckerInterface
     }
 
     /**
-     * Checks wether login is allowed (front end only).
+     * Checks whether login is allowed (front end only).
      */
     private function checkIfLoginIsAllowed(User $user): void
     {
@@ -95,7 +66,7 @@ class UserChecker implements UserCheckerInterface
             return;
         }
 
-        $ex = new DisabledException(sprintf('User "%s" is not allowed to log in', $user->username));
+        $ex = new DisabledException(\sprintf('User "%s" is not allowed to log in', $user->username));
         $ex->setUser($user);
 
         throw $ex;
@@ -106,7 +77,6 @@ class UserChecker implements UserCheckerInterface
      */
     private function checkIfAccountIsActive(User $user): void
     {
-        /** @var Config $config */
         $config = $this->framework->getAdapter(Config::class);
 
         $start = (int) $user->start;
@@ -116,16 +86,16 @@ class UserChecker implements UserCheckerInterface
         $logMessage = '';
 
         if ($notActiveYet) {
-            $logMessage = sprintf(
+            $logMessage = \sprintf(
                 'The account is not active yet (activation date: %s)',
-                Date::parse($config->get('dateFormat'), $start)
+                Date::parse($config->get('dateFormat'), $start),
             );
         }
 
         if ($notActiveAnymore) {
-            $logMessage = sprintf(
+            $logMessage = \sprintf(
                 'The account is not active anymore (deactivation date: %s)',
-                Date::parse($config->get('dateFormat'), $stop)
+                Date::parse($config->get('dateFormat'), $stop),
             );
         }
 

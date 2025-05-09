@@ -12,44 +12,311 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\Contao;
 
+use Contao\Config;
 use Contao\Controller;
+use Contao\CoreBundle\Tests\TestCase;
+use Contao\DcaExtractor;
+use Contao\DcaLoader;
+use Contao\Environment;
+use Contao\PageModel;
 use Contao\System;
-use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Symfony\Component\HttpFoundation\Request;
 
 class ControllerTest extends TestCase
 {
-    public function testReturnsTheTimeZones(): void
+    protected function setUp(): void
     {
-        $timeZones = System::getTimeZones();
+        parent::setUp();
 
-        $this->assertCount(9, $timeZones['General']);
-        $this->assertCount(51, $timeZones['Africa']);
-        $this->assertCount(140, $timeZones['America']);
-        $this->assertCount(10, $timeZones['Antarctica']);
-        $this->assertCount(83, $timeZones['Asia']);
-        $this->assertCount(11, $timeZones['Atlantic']);
-        $this->assertCount(22, $timeZones['Australia']);
-        $this->assertCount(4, $timeZones['Brazil']);
-        $this->assertCount(9, $timeZones['Canada']);
-        $this->assertCount(2, $timeZones['Chile']);
-        $this->assertCount(53, $timeZones['Europe']);
-        $this->assertCount(11, $timeZones['Indian']);
-        $this->assertCount(4, $timeZones['Brazil']);
-        $this->assertCount(3, $timeZones['Mexico']);
-        $this->assertCount(40, $timeZones['Pacific']);
-        $this->assertCount(13, $timeZones['United States']);
+        Controller::resetControllerCache();
     }
 
-    public function testGeneratesTheMargin(): void
+    protected function tearDown(): void
     {
-        $margins = [
-            'top' => '40px',
-            'right' => '10%',
-            'bottom' => '-2px',
-            'left' => '-50%',
-            'unit' => '',
+        unset($GLOBALS['TL_LANG'], $GLOBALS['TL_MIME']);
+
+        $this->resetStaticProperties([
+            DcaExtractor::class,
+            DcaLoader::class,
+            System::class,
+            Config::class,
+            Environment::class,
+            Controller::class,
+        ]);
+
+        parent::tearDown();
+    }
+
+    public function testAddToUrlWithoutQueryString(): void
+    {
+        $request = new Request();
+        $request->attributes->set('_contao_referer_id', 'cri');
+
+        $container = $this->getContainerWithContaoConfiguration();
+        $container->get('request_stack')->push($request);
+
+        System::setContainer($container);
+
+        $this->assertSame('/', Controller::addToUrl(''));
+        $this->assertSame('/?do=page&amp;ref=cri', Controller::addToUrl('do=page'));
+        $this->assertSame('/?do=page&amp;rt=foo&amp;ref=cri', Controller::addToUrl('do=page&amp;rt=foo'));
+        $this->assertSame('/?do=page&amp;ref=cri', Controller::addToUrl('do=page&amp;ref=bar'));
+        $this->assertSame('/?act=edit&amp;id=2&amp;ref=cri', Controller::addToUrl('act=edit&id=2'));
+        $this->assertSame('/?act=edit&amp;id=2&amp;ref=cri', Controller::addToUrl('act=edit&amp;id=2'));
+        $this->assertSame('/?act=edit&amp;foo=%2B&amp;bar=%20&amp;ref=cri', Controller::addToUrl('act=edit&amp;foo=%2B&amp;bar=%20'));
+
+        $this->assertSame('/', Controller::addToUrl('', false));
+        $this->assertSame('/?do=page', Controller::addToUrl('do=page', false));
+        $this->assertSame('/?do=page&amp;rt=foo', Controller::addToUrl('do=page&amp;rt=foo', false));
+        $this->assertSame('/?do=page&amp;ref=bar', Controller::addToUrl('do=page&amp;ref=bar', false));
+        $this->assertSame('/?act=edit&amp;id=2', Controller::addToUrl('act=edit&id=2', false));
+        $this->assertSame('/?act=edit&amp;id=2', Controller::addToUrl('act=edit&amp;id=2', false));
+        $this->assertSame('/?act=edit&amp;foo=%2B&amp;bar=%20', Controller::addToUrl('act=edit&amp;foo=%2B&amp;bar=%20', false));
+
+        $request->query->set('ref', 'ref');
+
+        $this->assertSame('/?ref=cri', Controller::addToUrl('', false));
+        $this->assertSame('/?do=page&amp;ref=cri', Controller::addToUrl('do=page', false));
+        $this->assertSame('/?do=page&amp;rt=foo&amp;ref=cri', Controller::addToUrl('do=page&amp;rt=foo', false));
+        $this->assertSame('/?do=page&amp;ref=cri', Controller::addToUrl('do=page&amp;ref=bar', false));
+        $this->assertSame('/?act=edit&amp;id=2&amp;ref=cri', Controller::addToUrl('act=edit&id=2', false));
+        $this->assertSame('/?act=edit&amp;id=2&amp;ref=cri', Controller::addToUrl('act=edit&amp;id=2', false));
+        $this->assertSame('/?act=edit&amp;foo=%2B&amp;bar=%20&amp;ref=cri', Controller::addToUrl('act=edit&amp;foo=%2B&amp;bar=%20', false));
+    }
+
+    public function testAddToUrlWithQueryString(): void
+    {
+        $request = new Request();
+        $request->attributes->set('_contao_referer_id', 'cri');
+        $request->server->set('QUERY_STRING', 'do=page&id=4');
+
+        $container = $this->getContainerWithContaoConfiguration();
+        $container->get('request_stack')->push($request);
+
+        System::setContainer($container);
+
+        $this->assertSame('/?do=page&amp;id=4', Controller::addToUrl(''));
+        $this->assertSame('/?do=page&amp;id=4&amp;ref=cri', Controller::addToUrl('do=page'));
+        $this->assertSame('/?do=page&amp;id=4&amp;rt=foo&amp;ref=cri', Controller::addToUrl('do=page&amp;rt=foo'));
+        $this->assertSame('/?do=page&amp;id=4&amp;ref=cri', Controller::addToUrl('do=page&amp;ref=bar'));
+        $this->assertSame('/?do=page&amp;id=2&amp;act=edit&amp;ref=cri', Controller::addToUrl('act=edit&id=2'));
+        $this->assertSame('/?do=page&amp;id=2&amp;act=edit&amp;ref=cri', Controller::addToUrl('act=edit&amp;id=2'));
+        $this->assertSame('/?do=page&amp;id=4&amp;act=edit&amp;foo=%2B&amp;bar=%20&amp;ref=cri', Controller::addToUrl('act=edit&amp;foo=%2B&amp;bar=%20'));
+        $this->assertSame('/?do=page&amp;key=foo&amp;ref=cri', Controller::addToUrl('key=foo', true, ['id']));
+
+        $this->assertSame('/?do=page&amp;id=4', Controller::addToUrl('', false));
+        $this->assertSame('/?do=page&amp;id=4', Controller::addToUrl('do=page', false));
+        $this->assertSame('/?do=page&amp;id=4&amp;rt=foo', Controller::addToUrl('do=page&amp;rt=foo', false));
+        $this->assertSame('/?do=page&amp;id=4&amp;ref=bar', Controller::addToUrl('do=page&amp;ref=bar', false));
+        $this->assertSame('/?do=page&amp;id=2&amp;act=edit', Controller::addToUrl('act=edit&id=2', false));
+        $this->assertSame('/?do=page&amp;id=2&amp;act=edit', Controller::addToUrl('act=edit&amp;id=2', false));
+        $this->assertSame('/?do=page&amp;id=4&amp;act=edit&amp;foo=%2B&amp;bar=%20', Controller::addToUrl('act=edit&amp;foo=%2B&amp;bar=%20', false));
+        $this->assertSame('/?do=page&amp;key=foo', Controller::addToUrl('key=foo', false, ['id']));
+
+        $request->query->set('ref', 'ref');
+
+        $this->assertSame('/?do=page&amp;id=4&amp;ref=cri', Controller::addToUrl('', false));
+        $this->assertSame('/?do=page&amp;id=4&amp;ref=cri', Controller::addToUrl('do=page', false));
+        $this->assertSame('/?do=page&amp;id=4&amp;rt=foo&amp;ref=cri', Controller::addToUrl('do=page&amp;rt=foo', false));
+        $this->assertSame('/?do=page&amp;id=4&amp;ref=cri', Controller::addToUrl('do=page&amp;ref=bar', false));
+        $this->assertSame('/?do=page&amp;id=2&amp;act=edit&amp;ref=cri', Controller::addToUrl('act=edit&id=2', false));
+        $this->assertSame('/?do=page&amp;id=2&amp;act=edit&amp;ref=cri', Controller::addToUrl('act=edit&amp;id=2', false));
+        $this->assertSame('/?do=page&amp;id=4&amp;act=edit&amp;foo=%2B&amp;bar=%20&amp;ref=cri', Controller::addToUrl('act=edit&amp;foo=%2B&amp;bar=%20', false));
+        $this->assertSame('/?do=page&amp;key=foo&amp;ref=cri', Controller::addToUrl('key=foo', true, ['id']));
+    }
+
+    #[DataProvider('pageStatusIconProvider')]
+    public function testPageStatusIcon(array $pageModelData, string $expected): void
+    {
+        $pageModel = $this->mockClassWithProperties(PageModel::class, $pageModelData);
+
+        $this->assertSame($expected, Controller::getPageStatusIcon($pageModel));
+        $this->assertFileExists(__DIR__.'/../../contao/themes/flexible/icons/'.$expected);
+    }
+
+    public static function pageStatusIconProvider(): iterable
+    {
+        yield 'Published' => [
+            [
+                'type' => 'regular',
+                'hide' => false,
+                'protected' => false,
+                'start' => '',
+                'stop' => '',
+                'published' => true,
+            ],
+            'regular.svg',
         ];
 
-        $this->assertSame('margin:40px 10% -2px -50%;', Controller::generateMargin($margins));
+        yield 'Unpublished' => [
+            [
+                'type' => 'regular',
+                'hide' => false,
+                'protected' => false,
+                'start' => '',
+                'stop' => '',
+                'published' => false,
+            ],
+            'regular_1.svg',
+        ];
+
+        yield 'Hidden in menu' => [
+            [
+                'type' => 'regular',
+                'hide' => true,
+                'protected' => false,
+                'start' => '',
+                'stop' => '',
+                'published' => true,
+            ],
+            'regular_2.svg',
+        ];
+
+        yield 'Unpublished and hidden from menu' => [
+            [
+                'type' => 'regular',
+                'hide' => true,
+                'protected' => false,
+                'start' => '',
+                'stop' => '',
+                'published' => false,
+            ],
+            'regular_3.svg',
+        ];
+
+        yield 'Protected' => [
+            [
+                'type' => 'regular',
+                'hide' => false,
+                'protected' => true,
+                'start' => '',
+                'stop' => '',
+                'published' => true,
+            ],
+            'regular_4.svg',
+        ];
+
+        yield 'Unpublished and protected' => [
+            [
+                'type' => 'regular',
+                'hide' => false,
+                'protected' => true,
+                'start' => '',
+                'stop' => '',
+                'published' => false,
+            ],
+            'regular_5.svg',
+        ];
+
+        yield 'Unpublished and protected and hidden from menu' => [
+            [
+                'type' => 'regular',
+                'hide' => true,
+                'protected' => true,
+                'start' => '',
+                'stop' => '',
+                'published' => false,
+            ],
+            'regular_7.svg',
+        ];
+
+        yield 'Unpublished by stop date' => [
+            [
+                'type' => 'regular',
+                'hide' => false,
+                'protected' => false,
+                'start' => '',
+                'stop' => '100',
+                'published' => true,
+            ],
+            'regular_1.svg',
+        ];
+
+        yield 'Unpublished by start date' => [
+            [
+                'type' => 'regular',
+                'hide' => false,
+                'protected' => false,
+                'start' => PHP_INT_MAX,
+                'stop' => '',
+                'published' => true,
+            ],
+            'regular_1.svg',
+        ];
+
+        yield 'Root page' => [
+            [
+                'type' => 'root',
+                'hide' => false,
+                'protected' => false,
+                'start' => '',
+                'stop' => '',
+                'published' => true,
+            ],
+            'root.svg',
+        ];
+
+        yield 'Unpublished root page' => [
+            [
+                'type' => 'root',
+                'hide' => false,
+                'protected' => false,
+                'start' => '',
+                'stop' => '',
+                'published' => false,
+            ],
+            'root_1.svg',
+        ];
+
+        yield 'Hidden root page' => [
+            [
+                'type' => 'root',
+                'hide' => true,
+                'protected' => false,
+                'start' => '',
+                'stop' => '',
+                'published' => true,
+            ],
+            'root.svg',
+        ];
+
+        yield 'Protected root page' => [
+            [
+                'type' => 'root',
+                'hide' => false,
+                'protected' => true,
+                'start' => '',
+                'stop' => '',
+                'published' => true,
+            ],
+            'root.svg',
+        ];
+
+        yield 'Root in maintenance mode' => [
+            [
+                'type' => 'root',
+                'hide' => false,
+                'protected' => false,
+                'maintenanceMode' => true,
+                'start' => '',
+                'stop' => '',
+                'published' => true,
+            ],
+            'root_2.svg',
+        ];
+
+        yield 'Unpublished root in maintenance mode' => [
+            [
+                'type' => 'root',
+                'hide' => false,
+                'protected' => true,
+                'maintenanceMode' => true,
+                'start' => '',
+                'stop' => '',
+                'published' => false,
+            ],
+            'root_1.svg',
+        ];
     }
 }

@@ -16,17 +16,25 @@ use Contao\BackendUser;
 use Contao\CoreBundle\Command\UserPasswordCommand;
 use Contao\CoreBundle\Tests\TestCase;
 use Doctrine\DBAL\Connection;
-use PHPUnit\Framework\MockObject\MockObject;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Exception\InvalidArgumentException;
 use Symfony\Component\Console\Exception\RuntimeException;
 use Symfony\Component\Console\Helper\QuestionHelper;
+use Symfony\Component\Console\Terminal;
 use Symfony\Component\Console\Tester\CommandTester;
-use Symfony\Component\Security\Core\Encoder\EncoderFactoryInterface;
-use Symfony\Component\Security\Core\Encoder\PasswordEncoderInterface;
+use Symfony\Component\PasswordHasher\Hasher\PasswordHasherFactoryInterface;
+use Symfony\Component\PasswordHasher\PasswordHasherInterface;
 
 class UserPasswordCommandTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        $this->resetStaticProperties([Terminal::class]);
+
+        parent::tearDown();
+    }
+
     public function testDefinesUsernameAndPassword(): void
     {
         $command = $this->getCommand();
@@ -142,7 +150,6 @@ class UserPasswordCommandTest extends TestCase
 
     public function testFailsIfTheUsernameIsUnknown(): void
     {
-        /** @var Connection&MockObject $connection */
         $connection = $this->createMock(Connection::class);
         $connection
             ->expects($this->once())
@@ -163,12 +170,9 @@ class UserPasswordCommandTest extends TestCase
         (new CommandTester($command))->execute($input, ['interactive' => false]);
     }
 
-    /**
-     * @dataProvider usernamePasswordProvider
-     */
+    #[DataProvider('usernamePasswordProvider')]
     public function testResetsPassword(string $username, string $password): void
     {
-        /** @var Connection&MockObject $connection */
         $connection = $this->createMock(Connection::class);
         $connection
             ->expects($this->once())
@@ -177,11 +181,9 @@ class UserPasswordCommandTest extends TestCase
                 'tl_user',
                 [
                     'password' => '$argon2id$v=19$m=65536,t=6,p=1$T+WK0xPOk21CQ2dX9AFplw$2uCrfvt7Tby81Dhc8Y7wHQQGP1HnPC3nDEb4FtXsfrQ',
-                    'locked' => 0,
-                    'loginAttempts' => 0,
-                    'pwChange' => '',
+                    'pwChange' => 0,
                 ],
-                ['username' => $username]
+                ['username' => $username],
             )
             ->willReturn(1)
         ;
@@ -196,7 +198,7 @@ class UserPasswordCommandTest extends TestCase
         (new CommandTester($command))->execute($input, ['interactive' => false]);
     }
 
-    public function usernamePasswordProvider(): \Generator
+    public static function usernamePasswordProvider(): iterable
     {
         yield ['foobar', '12345678'];
         yield ['k.jones', 'kevinjones'];
@@ -215,11 +217,9 @@ class UserPasswordCommandTest extends TestCase
                 'tl_user',
                 [
                     'password' => '$argon2id$v=19$m=65536,t=6,p=1$T+WK0xPOk21CQ2dX9AFplw$2uCrfvt7Tby81Dhc8Y7wHQQGP1HnPC3nDEb4FtXsfrQ',
-                    'locked' => 0,
-                    'loginAttempts' => 0,
-                    'pwChange' => '1',
+                    'pwChange' => 1,
                 ],
-                ['username' => $username]
+                ['username' => $username],
             )
             ->willReturn(1)
         ;
@@ -235,31 +235,26 @@ class UserPasswordCommandTest extends TestCase
         (new CommandTester($command))->execute($input, ['interactive' => false]);
     }
 
-    private function getCommand(Connection $connection = null, string $password = null): UserPasswordCommand
+    private function getCommand(Connection|null $connection = null, string|null $password = null): UserPasswordCommand
     {
-        if (null === $connection) {
-            $connection = $this->createMock(Connection::class);
-        }
+        $connection ??= $this->createMock(Connection::class);
+        $password ??= '12345678';
 
-        if (null === $password) {
-            $password = '12345678';
-        }
-
-        $encoder = $this->createMock(PasswordEncoderInterface::class);
-        $encoder
-            ->method('encodePassword')
-            ->with($password, null)
+        $passwordHasher = $this->createMock(PasswordHasherInterface::class);
+        $passwordHasher
+            ->method('hash')
+            ->with($password)
             ->willReturn('$argon2id$v=19$m=65536,t=6,p=1$T+WK0xPOk21CQ2dX9AFplw$2uCrfvt7Tby81Dhc8Y7wHQQGP1HnPC3nDEb4FtXsfrQ')
         ;
 
-        $encoderFactory = $this->createMock(EncoderFactoryInterface::class);
-        $encoderFactory
-            ->method('getEncoder')
+        $passwordHasherFactory = $this->createMock(PasswordHasherFactoryInterface::class);
+        $passwordHasherFactory
+            ->method('getPasswordHasher')
             ->with(BackendUser::class)
-            ->willReturn($encoder)
+            ->willReturn($passwordHasher)
         ;
 
-        $command = new UserPasswordCommand($this->mockContaoFramework(), $connection, $encoderFactory);
+        $command = new UserPasswordCommand($this->mockContaoFramework(), $connection, $passwordHasherFactory);
         $command->setApplication(new Application());
 
         return $command;

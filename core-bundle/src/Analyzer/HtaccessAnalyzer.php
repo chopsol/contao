@@ -14,10 +14,7 @@ namespace Contao\CoreBundle\Analyzer;
 
 class HtaccessAnalyzer
 {
-    /**
-     * @var \SplFileInfo
-     */
-    private $file;
+    private readonly \SplFileInfo $file;
 
     /**
      * @throws \InvalidArgumentException
@@ -25,7 +22,7 @@ class HtaccessAnalyzer
     public function __construct(\SplFileInfo $file)
     {
         if (!$file->isFile()) {
-            throw new \InvalidArgumentException(sprintf('%s is not a file.', $file));
+            throw new \InvalidArgumentException(\sprintf('%s is not a file.', $file));
         }
 
         $this->file = $file;

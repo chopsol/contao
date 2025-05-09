@@ -20,16 +20,10 @@ use Symfony\Component\HttpFoundation\Request;
 class WebsiteRootsConfigProvider implements ProviderInterface
 {
     /**
-     * @var Connection
+     * @internal
      */
-    private $connection;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.cors.website_roots_config_provider" service instead
-     */
-    public function __construct(Connection $connection)
+    public function __construct(private readonly Connection $connection)
     {
-        $this->connection = $connection;
     }
 
     public function getOptions(Request $request): array
@@ -38,21 +32,20 @@ class WebsiteRootsConfigProvider implements ProviderInterface
             return [];
         }
 
-        $stmt = $this->connection->prepare("
-            SELECT EXISTS (
-                SELECT
-                    id
-                FROM
-                    tl_page
-                WHERE
-                    type = 'root' AND dns = :dns
-            )
-        ");
+        $stmt = $this->connection->prepare(
+            <<<'SQL'
+                SELECT EXISTS (
+                    SELECT id
+                    FROM tl_page
+                    WHERE type = 'root'
+                        AND dns = :dns
+                )
+                SQL,
+        );
 
         $stmt->bindValue('dns', preg_replace('@^https?://@', '', $request->headers->get('origin')));
-        $stmt->execute();
 
-        if (!$stmt->fetchColumn()) {
+        if (!$stmt->executeQuery()->fetchOne()) {
             return [];
         }
 
@@ -78,8 +71,8 @@ class WebsiteRootsConfigProvider implements ProviderInterface
     private function canRunDbQuery(): bool
     {
         try {
-            return $this->connection->getSchemaManager()->tablesExist(['tl_page']);
-        } catch (DriverException $e) {
+            return $this->connection->createSchemaManager()->tablesExist(['tl_page']);
+        } catch (DriverException) {
             return false;
         }
     }

@@ -17,44 +17,22 @@ use Contao\CoreBundle\Event\ContaoCoreEvents;
 use Contao\CoreBundle\Event\ImageSizesEvent;
 use Contao\CoreBundle\Image\ImageSizes;
 use Contao\CoreBundle\Tests\TestCase;
-use Contao\CoreBundle\Translation\Translator;
 use Doctrine\DBAL\Connection;
 use PHPUnit\Framework\MockObject\MockObject;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
-use Symfony\Contracts\Service\ResetInterface;
+use Symfony\Contracts\Translation\TranslatorInterface;
 
 class ImageSizesTest extends TestCase
 {
-    /**
-     * @var Connection&MockObject
-     */
-    private $connection;
+    private ImageSizes $imageSizes;
 
-    /**
-     * @var EventDispatcherInterface&MockObject
-     */
-    private $eventDispatcher;
+    private Connection&MockObject $connection;
 
-    /**
-     * @var ImageSizes
-     */
-    private $imageSizes;
+    private EventDispatcherInterface&MockObject $eventDispatcher;
 
     protected function setUp(): void
     {
         parent::setUp();
-
-        $GLOBALS['TL_CROP'] = [
-            'relative' => [
-                'proportional', 'box',
-            ],
-            'exact' => [
-                'crop',
-                'left_top',    'center_top',    'right_top',
-                'left_center', 'center_center', 'right_center',
-                'left_bottom', 'center_bottom', 'right_bottom',
-            ],
-        ];
 
         $this->connection = $this->createMock(Connection::class);
         $this->eventDispatcher = $this->createMock(EventDispatcherInterface::class);
@@ -62,8 +40,7 @@ class ImageSizesTest extends TestCase
         $this->imageSizes = new ImageSizes(
             $this->connection,
             $this->eventDispatcher,
-            $this->mockContaoFramework(),
-            $this->createMock(Translator::class)
+            $this->createMock(TranslatorInterface::class),
         );
     }
 
@@ -75,8 +52,7 @@ class ImageSizesTest extends TestCase
 
         $options = $this->imageSizes->getAllOptions();
 
-        $this->assertArrayHasKey('relative', $options);
-        $this->assertArrayHasKey('exact', $options);
+        $this->assertArrayHasKey('custom', $options);
         $this->assertArrayHasKey('My theme', $options);
         $this->assertArrayHasKey('42', $options['My theme']);
         $this->assertArrayHasKey('image_sizes', $options);
@@ -91,8 +67,7 @@ class ImageSizesTest extends TestCase
 
         $options = $this->imageSizes->getAllOptions();
 
-        $this->assertArrayHasKey('relative', $options);
-        $this->assertArrayHasKey('exact', $options);
+        $this->assertArrayHasKey('custom', $options);
         $this->assertArrayNotHasKey('My theme', $options);
     }
 
@@ -101,15 +76,14 @@ class ImageSizesTest extends TestCase
         $this->expectEvent(ContaoCoreEvents::IMAGE_SIZES_USER);
         $this->expectExampleImageSizes();
 
-        /** @var BackendUser&MockObject $user */
         $user = $this->mockClassWithProperties(BackendUser::class);
         $user->isAdmin = true;
 
         $options = $this->imageSizes->getOptionsForUser($user);
 
-        // TL_CROP would not be returned without the admin check, because it is
+        // Default options would not be returned without the admin check, because it is
         // not within the allowed image sizes
-        $this->assertArrayHasKey('relative', $options);
+        $this->assertArrayHasKey('custom', $options);
     }
 
     public function testReturnsTheRegularUserOptions(): void
@@ -117,7 +91,6 @@ class ImageSizesTest extends TestCase
         $this->expectEvent(ContaoCoreEvents::IMAGE_SIZES_USER);
         $this->expectExampleImageSizes();
 
-        /** @var BackendUser&MockObject $user */
         $user = $this->mockClassWithProperties(BackendUser::class);
         $user->isAdmin = false;
 
@@ -126,25 +99,21 @@ class ImageSizesTest extends TestCase
 
         $options = $this->imageSizes->getOptionsForUser($user);
 
-        $this->assertArrayNotHasKey('relative', $options);
-        $this->assertArrayNotHasKey('exact', $options);
+        $this->assertArrayNotHasKey('custom', $options);
         $this->assertArrayHasKey('My theme', $options);
         $this->assertArrayHasKey('42', $options['My theme']);
 
-        /** @var BackendUser&MockObject $user */
         $user = $this->mockClassWithProperties(BackendUser::class);
         $user->isAdmin = false;
 
-        // Allow only some TL_CROP options
+        // Allow only some default options
         $user->imageSizes = ['proportional', 'box'];
 
         $options = $this->imageSizes->getOptionsForUser($user);
 
-        $this->assertArrayHasKey('relative', $options);
-        $this->assertArrayNotHasKey('exact', $options);
+        $this->assertArrayHasKey('custom', $options);
         $this->assertArrayNotHasKey('My theme', $options);
 
-        /** @var BackendUser&MockObject $user */
         $user = $this->mockClassWithProperties(BackendUser::class);
         $user->isAdmin = false;
 
@@ -158,8 +127,6 @@ class ImageSizesTest extends TestCase
 
     public function testServiceIsResetable(): void
     {
-        $this->assertInstanceOf(ResetInterface::class, $this->imageSizes);
-
         $this->eventDispatcher
             ->expects($this->exactly(3))
             ->method('dispatch')
@@ -167,11 +134,11 @@ class ImageSizesTest extends TestCase
 
         $this->connection
             ->expects($this->exactly(2))
-            ->method('fetchAll')
+            ->method('fetchAllAssociative')
             ->willReturn([])
         ;
 
-        // Test that fetchAll() is only called once
+        // Test that fetchAllAssociative() is only called once
         $this->imageSizes->getAllOptions();
         $this->imageSizes->getAllOptions();
 
@@ -198,7 +165,7 @@ class ImageSizesTest extends TestCase
     {
         $this->connection
             ->expects($this->atLeastOnce())
-            ->method('fetchAll')
+            ->method('fetchAllAssociative')
             ->willReturn($imageSizes)
         ;
     }

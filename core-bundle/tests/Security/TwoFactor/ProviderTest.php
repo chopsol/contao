@@ -16,8 +16,8 @@ use Contao\CoreBundle\Security\TwoFactor\Authenticator;
 use Contao\CoreBundle\Security\TwoFactor\Provider;
 use Contao\CoreBundle\Tests\TestCase;
 use Contao\User;
-use PHPUnit\Framework\MockObject\MockObject;
 use Scheb\TwoFactorBundle\Security\TwoFactor\AuthenticationContextInterface;
+use Symfony\Component\Security\Core\User\UserInterface;
 
 class ProviderTest extends TestCase
 {
@@ -29,7 +29,7 @@ class ProviderTest extends TestCase
         $context
             ->expects($this->once())
             ->method('getUser')
-            ->willReturn(null)
+            ->willReturn($this->createMock(UserInterface::class))
         ;
 
         $provider = new Provider($authenticator);
@@ -41,9 +41,8 @@ class ProviderTest extends TestCase
     {
         $authenticator = $this->createMock(Authenticator::class);
 
-        /** @var User&MockObject $user */
         $user = $this->mockClassWithProperties(User::class);
-        $user->useTwoFactor = '';
+        $user->useTwoFactor = false;
 
         $context = $this->createMock(AuthenticationContextInterface::class);
         $context
@@ -61,9 +60,8 @@ class ProviderTest extends TestCase
     {
         $authenticator = $this->createMock(Authenticator::class);
 
-        /** @var User&MockObject $user */
         $user = $this->mockClassWithProperties(User::class);
-        $user->useTwoFactor = '1';
+        $user->useTwoFactor = true;
 
         $context = $this->createMock(AuthenticationContextInterface::class);
         $context
@@ -82,7 +80,7 @@ class ProviderTest extends TestCase
         $authenticator = $this->createMock(Authenticator::class);
         $provider = new Provider($authenticator);
 
-        $this->assertFalse($provider->validateAuthenticationCode(null, ''));
+        $this->assertFalse($provider->validateAuthenticationCode(new \stdClass(), ''));
     }
 
     public function testDoesNotValidateTheAuthenticationCodeIfTheCodeIsInvalid(): void
@@ -104,8 +102,7 @@ class ProviderTest extends TestCase
 
     public function testValidatesTheAuthenticationCode(): void
     {
-        /** @var User&MockObject $user */
-        $user = $this->mockClassWithProperties(User::class, ['useTwoFactor' => '1']);
+        $user = $this->mockClassWithProperties(User::class, ['useTwoFactor' => true]);
 
         $authenticator = $this->createMock(Authenticator::class);
         $authenticator

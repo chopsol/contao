@@ -12,77 +12,43 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Entity;
 
-use Doctrine\ORM\Mapping as ORM;
+use Doctrine\ORM\Mapping\Column;
+use Doctrine\ORM\Mapping\Entity;
 use Doctrine\ORM\Mapping\GeneratedValue;
+use Doctrine\ORM\Mapping\Id;
+use Doctrine\ORM\Mapping\Index;
+use Doctrine\ORM\Mapping\Table;
 
-/**
- * @ORM\Table(
- *     name="tl_crawl_queue",
- *     indexes={
- *         @ORM\Index(name="job_id", columns={"job_id"}),
- *         @ORM\Index(name="uri_hash", columns={"uri_hash"}),
- *         @ORM\Index(name="processed", columns={"processed"}),
- *     }
- * )
- * @ORM\Entity()
- */
+#[Table(name: 'tl_crawl_queue')]
+#[Entity]
+#[Index(columns: ['job_id'], name: 'job_id')]
+#[Index(columns: ['uri_hash'], name: 'uri_hash')]
+#[Index(columns: ['processed'], name: 'processed')]
 class CrawlQueue
 {
-    /**
-     * @var int
-     *
-     * @ORM\Id
-     * @ORM\Column(type="integer", options={"unsigned"=true})
-     * @GeneratedValue
-     */
-    public $id;
+    #[Id]
+    #[Column(type: 'integer', options: ['unsigned' => true])]
+    #[GeneratedValue]
+    public int $id;
 
-    /**
-     * @var string
-     *
-     * @ORM\Column(name="job_id", type="string", length=128, options={"fixed"=true})
-     */
-    public $jobId;
+    #[Column(name: 'job_id', type: 'string', length: 128, options: ['fixed' => true])]
+    public string $jobId;
 
-    /**
-     * @var string
-     *
-     * @ORM\Column(type="text")
-     */
-    public $uri;
+    #[Column(type: 'text')]
+    public string $uri;
 
-    /**
-     * @var string
-     *
-     * @ORM\Column(name="uri_hash", type="string", length=40, options={"fixed"=true})
-     */
-    public $uriHash;
+    #[Column(name: 'uri_hash', type: 'string', length: 40, options: ['fixed' => true])]
+    public string $uriHash;
 
-    /**
-     * @var string
-     *
-     * @ORM\Column(name="found_on", type="text", nullable=true)
-     */
-    public $foundOn;
+    #[Column(name: 'found_on', type: 'text', nullable: true)]
+    public string|null $foundOn = null;
 
-    /**
-     * @var int
-     *
-     * @ORM\Column(type="smallint")
-     */
-    public $level;
+    #[Column(type: 'smallint')]
+    public int $level;
 
-    /**
-     * @var bool
-     *
-     * @ORM\Column(type="boolean")
-     */
-    public $processed;
+    #[Column(type: 'boolean')]
+    public bool $processed;
 
-    /**
-     * @var string
-     *
-     * @ORM\Column(type="text", nullable=true)
-     */
-    public $tags;
+    #[Column(type: 'text', nullable: true)]
+    public string|null $tags = null;
 }

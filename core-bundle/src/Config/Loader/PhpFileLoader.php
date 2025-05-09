@@ -12,28 +12,49 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Config\Loader;
 
+use PhpParser\Node;
+use PhpParser\Node\Arg;
+use PhpParser\Node\Expr\BooleanNot;
+use PhpParser\Node\Expr\ClassConstFetch;
+use PhpParser\Node\Expr\ConstFetch;
+use PhpParser\Node\Expr\Exit_;
+use PhpParser\Node\Expr\FuncCall;
+use PhpParser\Node\Identifier;
+use PhpParser\Node\Name;
+use PhpParser\Node\Name\FullyQualified;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\Node\Stmt\Class_;
+use PhpParser\Node\Stmt\Declare_;
+use PhpParser\Node\Stmt\Expression;
+use PhpParser\Node\Stmt\If_;
+use PhpParser\Node\Stmt\InlineHTML;
+use PhpParser\Node\Stmt\Namespace_;
+use PhpParser\Node\Stmt\Use_;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
+use PhpParser\NodeVisitorAbstract;
+use PhpParser\ParserFactory;
+use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
 use Symfony\Component\Config\Loader\Loader;
-use Webmozart\PathUtil\Path;
+use Symfony\Component\Filesystem\Path;
 
 /**
  * Reads PHP files and returns the content without the opening and closing PHP tags.
  */
 class PhpFileLoader extends Loader
 {
-    public function load($resource, $type = null): string
+    public function load(mixed $resource, string|null $type = null): string
     {
         [$code, $namespace] = $this->parseFile((string) $resource);
 
-        $code = $this->stripLegacyCheck($code);
-
-        if (false !== $namespace && 'namespaced' === $type) {
-            $code = sprintf("\nnamespace %s {%s}\n", $namespace, $code);
+        if ('namespaced' === $type) {
+            $code = \sprintf("\nnamespace %s{%s}\n", ltrim($namespace.' '), $code);
         }
 
         return $code;
     }
 
-    public function supports($resource, $type = null): bool
+    public function supports(mixed $resource, string|null $type = null): bool
     {
         return 'php' === Path::getExtension((string) $resource, true);
     }
@@ -45,71 +66,121 @@ class PhpFileLoader extends Loader
      */
     private function parseFile(string $file): array
     {
-        $code = '';
-        $namespace = '';
-        $buffer = false;
-        $stream = new \PHP_Token_Stream($file);
+        $ast = (new ParserFactory())
+            ->createForHostVersion()
+            ->parse(trim(file_get_contents($file)))
+        ;
 
-        foreach ($stream as $token) {
-            switch (true) {
-                case $token instanceof \PHP_Token_OPEN_TAG:
-                case $token instanceof \PHP_Token_CLOSE_TAG:
-                    // remove
-                    break;
+        $namespaceResolver = new NameResolver();
 
-                case false !== $buffer:
-                    $buffer .= $token;
+        $nodeStripper = new class() extends NodeVisitorAbstract {
+            public function leaveNode(Node $node): array|int|null
+            {
+                // Drop namespace and use declarations
+                if ($node instanceof Namespace_) {
+                    return $node->stmts;
+                }
 
-                    if (';' === (string) $token) {
-                        $code .= $this->handleDeclare($buffer);
-                        $buffer = false;
+                if ($node instanceof Use_) {
+                    return NodeTraverser::REMOVE_NODE;
+                }
+
+                // Drop the "strict_types" definition
+                if ($node instanceof Declare_) {
+                    foreach ($node->declares as $key => $declare) {
+                        if ('strict_types' === $declare->key->name) {
+                            unset($node->declares[$key]);
+                        }
                     }
-                    break;
 
-                case $token instanceof \PHP_Token_NAMESPACE:
-                    if ('{' === $token->getName()) {
-                        $namespace = false;
-                        $code .= $token;
-                    } else {
-                        $namespace = $token->getName();
-                        $stream->seek($token->getEndTokenId());
+                    if ([] === $node->declares) {
+                        return NodeTraverser::REMOVE_NODE;
                     }
-                    break;
+                }
 
-                case $token instanceof \PHP_Token_DECLARE:
-                    $buffer = (string) $token;
-                    break;
+                // Drop any inline HTML
+                if ($node instanceof InlineHTML) {
+                    return NodeTraverser::REMOVE_NODE;
+                }
 
-                default:
-                    $code .= $token;
+                // Drop legacy access check
+                if ($this->matchLegacyCheck($node)) {
+                    return NodeTraverser::REMOVE_NODE;
+                }
+
+                return null;
             }
-        }
+
+            private function matchLegacyCheck(Node $node): bool
+            {
+                return $node instanceof If_
+                    // match "if(!defined('TL_ROOT'))"
+                    && ($condition = $node->cond) instanceof BooleanNot
+                    && $condition->expr instanceof FuncCall
+                    && $condition->expr->name instanceof Name
+                    && 'defined' === $condition->expr->name->toLowerString()
+                    && null !== ($argument = $condition->expr->args[0] ?? null)
+                    && $argument->value instanceof String_
+                    && 'TL_ROOT' === $argument->value->value
+
+                    // match "die('You ...')"
+                    && ($statement = $node->stmts[0] ?? null) instanceof Expression
+                    && $statement->expr instanceof Exit_
+                    && ($text = $statement->expr->expr) instanceof String_
+                    && \in_array($text->value, ['You cannot access this file directly!', 'You can not access this file directly!'], true);
+            }
+        };
+
+        // Add an if statement around all class declarations to skip them if they exist:
+        // if (!\class_exists(tl_foo::class, false)) { class tl_foo … { … } }
+        $classWrapper = new class() extends NodeVisitorAbstract {
+            public function leaveNode(Node $node): If_|null
+            {
+                if ($node instanceof Class_) {
+                    return new If_(
+                        new BooleanNot(
+                            new FuncCall(
+                                new FullyQualified(['class_exists']),
+                                [
+                                    new Arg(
+                                        new ClassConstFetch(
+                                            new Name([$node->name->name]),
+                                            new Identifier('class'),
+                                        ),
+                                    ),
+                                    new Arg(
+                                        new ConstFetch(new Name('false')),
+                                    ),
+                                ],
+                            ),
+                        ),
+                        [
+                            'stmts' => [$node],
+                        ],
+                    );
+                }
+
+                return null;
+            }
+        };
+
+        $traverser = new NodeTraverser();
+        $traverser->addVisitor($namespaceResolver);
+        $traverser->addVisitor($nodeStripper);
+        $traverser->addVisitor($classWrapper);
+
+        $ast = $traverser->traverse($ast);
+
+        // Emit code and namespace information
+        $prettyPrinter = new PrettyPrinter();
+        $code = \sprintf("\n%s\n", $prettyPrinter->prettyPrint($ast));
+        $namespaceNode = $namespaceResolver->getNameContext()->getNamespace();
+        $namespace = $namespaceNode ? $namespaceNode->toString() : '';
+
+        // Force GC collection to reduce the total memory required when building the
+        // cache (see #4069)
+        gc_collect_cycles();
 
         return [$code, $namespace];
-    }
-
-    private function handleDeclare(string $code): string
-    {
-        $code = preg_replace('/(,\s*)?strict_types\s*=\s*1(\s*,)?/', '', $code);
-
-        if (preg_match('/declare\(\s*\)/', $code)) {
-            return '';
-        }
-
-        return str_replace(' ', '', $code);
-    }
-
-    private function stripLegacyCheck(string $code): string
-    {
-        $code = str_replace(
-            [
-                "if (!defined('TL_ROOT')) die('You cannot access this file directly!');",
-                "if (!defined('TL_ROOT')) die('You can not access this file directly!');",
-            ],
-            '',
-            $code
-        );
-
-        return "\n".trim($code)."\n";
     }
 }

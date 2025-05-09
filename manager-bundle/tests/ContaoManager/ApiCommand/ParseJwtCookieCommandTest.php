@@ -21,15 +21,9 @@ use Symfony\Component\Console\Tester\CommandTester;
 
 class ParseJwtCookieCommandTest extends ContaoTestCase
 {
-    /**
-     * @var JwtManager&MockObject
-     */
-    private $jwtManager;
+    private JwtManager&MockObject $jwtManager;
 
-    /**
-     * @var ParseJwtCookieCommand
-     */
-    private $command;
+    private ParseJwtCookieCommand $command;
 
     protected function setUp(): void
     {

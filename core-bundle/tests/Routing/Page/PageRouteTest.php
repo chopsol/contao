@@ -83,11 +83,11 @@ class PageRouteTest extends TestCase
     {
         $route = new PageRoute($this->mockPageModel());
 
-        $this->assertSame('xy', $route->getDefault('_locale'));
+        $this->assertSame('xx', $route->getDefault('_locale'));
 
-        $route = new PageRoute($this->mockPageModel(['rootLanguage' => 'en']));
+        $route = new PageRoute($this->mockPageModel(['rootLanguage' => 'en-US']));
 
-        $this->assertSame('en', $route->getDefault('_locale'));
+        $this->assertSame('en_US', $route->getDefault('_locale'));
     }
 
     public function testSetsPageDomainAsRouteHost(): void
@@ -99,35 +99,26 @@ class PageRouteTest extends TestCase
 
     public function testSetsProtocolIfRootPageUsesSSL(): void
     {
-        $route = new PageRoute($this->mockPageModel(['rootUseSSL' => false]));
+        $route = new PageRoute($this->mockPageModel(['rootUseSSL' => '']));
 
-        $this->assertEmpty($route->getSchemes());
+        $this->assertSame(['http'], $route->getSchemes());
 
         $route = new PageRoute($this->mockPageModel(['rootUseSSL' => true]));
 
         $this->assertSame(['https'], $route->getSchemes());
     }
 
-    /**
-     * @return PageModel&MockObject
-     */
-    private function mockPageModel(array $properties = []): PageModel
+    private function mockPageModel(array $properties = []): PageModel&MockObject
     {
-        /** @var PageModel&MockObject */
-        return $this->mockClassWithProperties(
-            PageModel::class,
-            array_merge(
-                [
-                    'id' => 17,
-                    'alias' => 'bar',
-                    'domain' => 'www.example.com',
-                    'rootLanguage' => 'xy',
-                    'rootUseSSL' => true,
-                    'urlPrefix' => 'foo',
-                    'urlSuffix' => '.baz',
-                ],
-                $properties
-            )
-        );
+        return $this->mockClassWithProperties(PageModel::class, [
+            'id' => 17,
+            'alias' => 'bar',
+            'domain' => 'www.example.com',
+            'rootLanguage' => 'xx',
+            'rootUseSSL' => true,
+            'urlPrefix' => 'foo',
+            'urlSuffix' => '.baz',
+            ...$properties,
+        ]);
     }
 }

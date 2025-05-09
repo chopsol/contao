@@ -12,11 +12,23 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\File;
 
+use Contao\Config;
 use Contao\ContentModel;
 use Contao\CoreBundle\File\Metadata;
+use Contao\CoreBundle\Framework\ContaoFramework;
+use Contao\CoreBundle\InsertTag\InsertTagParser;
+use Contao\CoreBundle\InsertTag\InsertTagSubscription;
+use Contao\CoreBundle\InsertTag\Resolver\EmptyInsertTag;
 use Contao\CoreBundle\Tests\TestCase;
+use Contao\DcaLoader;
 use Contao\FilesModel;
+use Contao\Model;
+use Contao\Model\MetadataTrait;
 use Contao\System;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Psr\Log\LoggerInterface;
+use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\HttpKernel\Fragment\FragmentHandler;
 
 class MetadataTest extends TestCase
 {
@@ -24,11 +36,23 @@ class MetadataTest extends TestCase
     {
         parent::setUp();
 
-        System::setContainer($this->getContainerWithContaoConfiguration());
+        $container = $this->getContainerWithContaoConfiguration();
+        $container->set('contao.insert_tag.parser', new InsertTagParser($this->createMock(ContaoFramework::class), $this->createMock(LoggerInterface::class), $this->createMock(FragmentHandler::class), $this->createMock(RequestStack::class)));
+
+        System::setContainer($container);
 
         $GLOBALS['TL_DCA']['tl_files']['fields']['meta']['eval']['metaFields'] = [
             'title' => '', 'alt' => '', 'link' => '', 'caption' => '',
         ];
+    }
+
+    protected function tearDown(): void
+    {
+        unset($GLOBALS['TL_DCA'], $GLOBALS['TL_LANG'], $GLOBALS['TL_MIME']);
+
+        $this->resetStaticProperties([DcaLoader::class, System::class, Config::class]);
+
+        parent::tearDown();
     }
 
     public function testCreateAndAccessMetadataContainer(): void
@@ -38,6 +62,8 @@ class MetadataTest extends TestCase
             Metadata::VALUE_CAPTION => 'caption',
             Metadata::VALUE_TITLE => 'title',
             Metadata::VALUE_URL => 'url',
+            Metadata::VALUE_UUID => '1234-5678',
+            Metadata::VALUE_LICENSE => 'https://creativecommons.org/licenses/by/4.0/',
             'foo' => 'bar',
         ]);
 
@@ -47,6 +73,7 @@ class MetadataTest extends TestCase
         $this->assertSame('caption', $metadata->getCaption());
         $this->assertSame('title', $metadata->getTitle());
         $this->assertSame('url', $metadata->getUrl());
+        $this->assertSame('https://creativecommons.org/licenses/by/4.0/', $metadata->getLicense());
         $this->assertSame('bar', $metadata->get('foo'));
 
         $this->assertSame(
@@ -55,9 +82,11 @@ class MetadataTest extends TestCase
                 Metadata::VALUE_CAPTION => 'caption',
                 Metadata::VALUE_TITLE => 'title',
                 Metadata::VALUE_URL => 'url',
+                Metadata::VALUE_UUID => '1234-5678',
+                Metadata::VALUE_LICENSE => 'https://creativecommons.org/licenses/by/4.0/',
                 'foo' => 'bar',
             ],
-            $metadata->all()
+            $metadata->all(),
         );
     }
 
@@ -69,6 +98,7 @@ class MetadataTest extends TestCase
         $this->assertSame('', $metadata->getCaption());
         $this->assertSame('', $metadata->getTitle());
         $this->assertSame('', $metadata->getUrl());
+        $this->assertSame('', $metadata->getLicense());
 
         $this->assertNull($metadata->get('foo'));
     }
@@ -94,13 +124,12 @@ class MetadataTest extends TestCase
 
     public function testCreatesMetadataContainerFromContentModel(): void
     {
-        /** @var ContentModel $model */
-        $model = (new \ReflectionClass(ContentModel::class))->newInstanceWithoutConstructor();
+        $model = $this->mockClassWithProperties(ContentModel::class, except: ['getOverwriteMetadata']);
 
         $model->setRow([
             'id' => 100,
             'headline' => 'foobar',
-            'overwriteMeta' => '1',
+            'overwriteMeta' => true,
             'alt' => 'foo alt',
             'imageTitle' => 'foo title',
             'imageUrl' => 'foo://bar',
@@ -114,19 +143,18 @@ class MetadataTest extends TestCase
                 Metadata::VALUE_TITLE => 'foo title',
                 Metadata::VALUE_URL => 'foo://bar',
             ],
-            $model->getOverwriteMetadata()->all()
+            $model->getOverwriteMetadata()->all(),
         );
     }
 
     public function testDoesNotCreateMetadataContainerFromContentModelIfOverwriteIsDisabled(): void
     {
-        /** @var ContentModel $model */
-        $model = (new \ReflectionClass(ContentModel::class))->newInstanceWithoutConstructor();
+        $model = $this->mockClassWithProperties(ContentModel::class, except: ['getOverwriteMetadata']);
 
         $model->setRow([
             'id' => 100,
             'headline' => 'foobar',
-            'overwriteMeta' => '',
+            'overwriteMeta' => false,
             'alt' => 'foo alt',
         ]);
 
@@ -135,8 +163,7 @@ class MetadataTest extends TestCase
 
     public function testCreatesMetadataContainerFromFilesModel(): void
     {
-        /** @var FilesModel $model */
-        $model = (new \ReflectionClass(FilesModel::class))->newInstanceWithoutConstructor();
+        $model = $this->mockClassWithProperties(FilesModel::class, except: ['getMetadata']);
 
         $model->setRow([
             'id' => 100,
@@ -166,7 +193,7 @@ class MetadataTest extends TestCase
                 'custom' => 'foobar',
             ],
             $model->getMetadata('en')->all(),
-            'get all meta from single locale'
+            'get all meta from single locale',
         );
 
         $this->assertSame(
@@ -177,12 +204,229 @@ class MetadataTest extends TestCase
                 Metadata::VALUE_CAPTION => 'foo caption',
             ],
             $model->getMetadata('es', 'de', 'en')->all(),
-            'get all metadata of first matching locale'
+            'get all metadata of first matching locale',
         );
 
-        $this->assertNull(
-            $model->getMetadata('es'),
-            'return null if no metadata is available for a locale'
+        $this->assertNull($model->getMetadata('es'), 'return null if no metadata is available for a locale');
+    }
+
+    public function testMergesMetadata(): void
+    {
+        $metadata = new Metadata(['foo' => 'FOO', 'bar' => 'BAR']);
+        $newMetadata = $metadata->with(['foobar' => 'FOOBAR', 'bar' => 'BAZ']);
+
+        $this->assertNotSame($metadata, $newMetadata, 'Should be a different instance.');
+
+        $this->assertSame(
+            [
+                'foo' => 'FOO',
+                'bar' => 'BAZ',
+                'foobar' => 'FOOBAR',
+            ],
+            $newMetadata->all(),
         );
+    }
+
+    public function testDoesNotCreateANewInstanceWhenMergingEmptyMetadata(): void
+    {
+        $metadata = new Metadata(['foo' => 'FOO', 'bar' => 'BAR']);
+        $newMetadata = $metadata->with([]);
+
+        $this->assertSame($metadata, $newMetadata, 'Should be the same instance.');
+    }
+
+    public function testGettingSchemaOrgData(): void
+    {
+        $metadata = new Metadata([
+            Metadata::VALUE_ALT => 'alt',
+            Metadata::VALUE_CAPTION => 'caption',
+            Metadata::VALUE_TITLE => 'title',
+            Metadata::VALUE_URL => 'url',
+            Metadata::VALUE_UUID => '1234-5678',
+            Metadata::VALUE_LICENSE => 'https://creativecommons.org/licenses/by/4.0/',
+            'foo' => 'bar',
+        ]);
+
+        $this->assertSame(
+            [
+                'AudioObject' => [
+                    'name' => 'title',
+                    'caption' => 'caption',
+                    'license' => 'https://creativecommons.org/licenses/by/4.0/',
+                ],
+                'ImageObject' => [
+                    'name' => 'title',
+                    'caption' => 'caption',
+                    'license' => 'https://creativecommons.org/licenses/by/4.0/',
+                ],
+                'MediaObject' => [
+                    'name' => 'title',
+                    'caption' => 'caption',
+                    'license' => 'https://creativecommons.org/licenses/by/4.0/',
+                ],
+                'VideoObject' => [
+                    'name' => 'title',
+                    'caption' => 'caption',
+                    'license' => 'https://creativecommons.org/licenses/by/4.0/',
+                ],
+                'DigitalDocument' => [
+                    'name' => 'title',
+                    'caption' => 'caption',
+                    'license' => 'https://creativecommons.org/licenses/by/4.0/',
+                ],
+                'SpreadsheetDigitalDocument' => [
+                    'name' => 'title',
+                    'caption' => 'caption',
+                    'license' => 'https://creativecommons.org/licenses/by/4.0/',
+                ],
+            ],
+            $metadata->getSchemaOrgData(),
+        );
+
+        $this->assertSame(
+            [
+                'name' => 'title',
+                'caption' => 'caption',
+                'license' => 'https://creativecommons.org/licenses/by/4.0/',
+            ],
+            $metadata->getSchemaOrgData('ImageObject'),
+        );
+
+        $this->assertSame([], $metadata->getSchemaOrgData('WhateverNonsense'));
+    }
+
+    public function testCanCustomizeSchemaOrgData(): void
+    {
+        $metadata = new Metadata(
+            [
+                Metadata::VALUE_ALT => 'alt',
+            ],
+            [
+                'ImageObject' => [
+                    'name' => 'title',
+                    'foobar' => 'baz',
+                ],
+            ],
+        );
+
+        $this->assertSame(
+            [
+                'name' => 'title',
+                'foobar' => 'baz',
+            ],
+            $metadata->getSchemaOrgData('ImageObject'),
+        );
+    }
+
+    #[DataProvider('getMetadataTraitRows')]
+    public function testMetadataTraitEmptyValues(array $row, array|null $expected): void
+    {
+        System::getContainer()->get('contao.insert_tag.parser')->addSubscription(
+            new InsertTagSubscription(new EmptyInsertTag(), '__invoke', 'empty', null, false, false),
+        );
+
+        $model = new class($row) extends Model {
+            use MetadataTrait;
+
+            public function __construct(array $row)
+            {
+                $this->arrData = $row;
+            }
+        };
+
+        $this->assertSame($expected, $model->getOverwriteMetadata()?->all());
+    }
+
+    public static function getMetadataTraitRows(): iterable
+    {
+        yield [
+            [
+                'overwriteMeta' => true,
+                'alt' => 'Alt',
+                'caption' => 'Caption',
+                'imageTitle' => 'Title',
+                'imageUrl' => '/url',
+                'foo' => 'bar',
+            ],
+            [
+                'alt' => 'Alt',
+                'caption' => 'Caption',
+                'title' => 'Title',
+                'link' => '/url',
+            ],
+        ];
+
+        yield [
+            [
+                'overwriteMeta' => false,
+                'alt' => 'Alt',
+                'caption' => 'Caption',
+                'imageTitle' => 'Title',
+                'imageUrl' => '/url',
+                'foo' => 'bar',
+            ],
+            null,
+        ];
+
+        yield [
+            [
+                'overwriteMeta' => true,
+                'alt' => null,
+                'caption' => '',
+                'imageTitle' => null,
+                'imageUrl' => '',
+                'foo' => 'bar',
+            ],
+            [],
+        ];
+
+        yield [
+            [
+                'overwriteMeta' => true,
+                'alt' => 'Alt',
+                'caption' => null,
+                'imageTitle' => 'Title',
+                'imageUrl' => null,
+                'foo' => 'bar',
+            ],
+            [
+                'alt' => 'Alt',
+                'title' => 'Title',
+            ],
+        ];
+
+        yield [
+            [
+                'overwriteMeta' => true,
+                'alt' => '{{empty}}',
+                'caption' => '{{empty}}',
+                'imageTitle' => '{{empty}}',
+                'imageUrl' => '{{empty}}',
+                'foo' => 'bar',
+            ],
+            [
+                'alt' => '{{empty}}',
+                'caption' => '{{empty}}',
+                'title' => '{{empty}}',
+                'link' => '',
+            ],
+        ];
+
+        yield [
+            [
+                'overwriteMeta' => true,
+                'alt' => '{{empty}}',
+                'caption' => '{{empty::foo}}',
+                'imageTitle' => '{{empty::bar}}',
+                'imageUrl' => '{{empty|urlattr}}',
+                'foo' => 'bar',
+            ],
+            [
+                'alt' => '{{empty}}',
+                'caption' => '{{empty::foo}}',
+                'title' => '{{empty::bar}}',
+                'link' => '',
+            ],
+        ];
     }
 }

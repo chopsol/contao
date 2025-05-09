@@ -14,17 +14,13 @@ namespace Contao\CoreBundle\HttpKernel\Header;
 
 /**
  * Handles HTTP headers in memory (for unit tests).
+ *
+ * @internal
  */
 class MemoryHeaderStorage implements HeaderStorageInterface
 {
-    /**
-     * @var array
-     */
-    private $headers;
-
-    public function __construct(array $headers = [])
+    public function __construct(private array $headers = [])
     {
-        $this->headers = $headers;
     }
 
     public function all(): array

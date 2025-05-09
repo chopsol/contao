@@ -14,11 +14,9 @@ namespace Contao\CoreBundle\Controller;
 
 use Contao\BackendAlerts;
 use Contao\BackendConfirm;
-use Contao\BackendFile;
 use Contao\BackendHelp;
 use Contao\BackendIndex;
 use Contao\BackendMain;
-use Contao\BackendPage;
 use Contao\BackendPassword;
 use Contao\BackendPopup;
 use Contao\CoreBundle\Picker\PickerBuilderInterface;
@@ -26,19 +24,17 @@ use Contao\CoreBundle\Picker\PickerConfig;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\UriSigner;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
-use Symfony\Component\Routing\Annotation\Route;
+use Symfony\Component\Routing\Attribute\Route;
 
 /**
- * @Route(defaults={"_scope" = "backend", "_token_check" = true})
- *
  * @internal
  */
+#[Route('%contao.backend.route_prefix%', defaults: ['_scope' => 'backend'])]
 class BackendController extends AbstractController
 {
-    /**
-     * @Route("/contao", name="contao_backend")
-     */
+    #[Route('', name: 'contao_backend')]
     public function mainAction(): Response
     {
         $this->initializeContaoFramework();
@@ -48,18 +44,18 @@ class BackendController extends AbstractController
         return $controller->run();
     }
 
-    /**
-     * @Route("/contao/login", name="contao_backend_login")
-     */
+    #[Route('/login', name: 'contao_backend_login', defaults: ['_store_referrer' => false])]
+    #[Route('/login-link', name: 'contao_backend_login_link', defaults: ['_store_referrer' => false])]
     public function loginAction(Request $request): Response
     {
         $this->initializeContaoFramework();
 
         if ($this->isGranted('IS_AUTHENTICATED_FULLY')) {
             if ($request->query->has('redirect')) {
-                $uriSigner = $this->get('uri_signer');
+                $uriSigner = $this->container->get('uri_signer');
 
-                // We cannot use $request->getUri() here as we want to work with the original URI (no query string reordering)
+                // We cannot use $request->getUri() here as we want to work with the original URI
+                // (no query string reordering)
                 if ($uriSigner->check($request->getSchemeAndHttpHost().$request->getBaseUrl().$request->getPathInfo().(null !== ($qs = $request->server->get('QUERY_STRING')) ? '?'.$qs : ''))) {
                     return new RedirectResponse($request->query->get('redirect'));
                 }
@@ -75,17 +71,14 @@ class BackendController extends AbstractController
 
     /**
      * Symfony will un-authenticate the user automatically by calling this route.
-     *
-     * @Route("/contao/logout", name="contao_backend_logout")
      */
+    #[Route('/logout', name: 'contao_backend_logout', defaults: ['_store_referrer' => false])]
     public function logoutAction(): RedirectResponse
     {
         return $this->redirectToRoute('contao_backend_login');
     }
 
-    /**
-     * @Route("/contao/password", name="contao_backend_password")
-     */
+    #[Route('/password', name: 'contao_backend_password', defaults: ['_store_referrer' => false])]
     public function passwordAction(): Response
     {
         $this->initializeContaoFramework();
@@ -95,9 +88,7 @@ class BackendController extends AbstractController
         return $controller->run();
     }
 
-    /**
-     * @Route("/contao/confirm", name="contao_backend_confirm")
-     */
+    #[Route('/confirm', name: 'contao_backend_confirm', defaults: ['_store_referrer' => false])]
     public function confirmAction(): Response
     {
         $this->initializeContaoFramework();
@@ -107,21 +98,7 @@ class BackendController extends AbstractController
         return $controller->run();
     }
 
-    /**
-     * @Route("/contao/file", name="contao_backend_file")
-     */
-    public function fileAction(): Response
-    {
-        $this->initializeContaoFramework();
-
-        $controller = new BackendFile();
-
-        return $controller->run();
-    }
-
-    /**
-     * @Route("/contao/help", name="contao_backend_help")
-     */
+    #[Route('/help', name: 'contao_backend_help', defaults: ['_store_referrer' => false])]
     public function helpAction(): Response
     {
         $this->initializeContaoFramework();
@@ -131,21 +108,7 @@ class BackendController extends AbstractController
         return $controller->run();
     }
 
-    /**
-     * @Route("/contao/page", name="contao_backend_page")
-     */
-    public function pageAction(): Response
-    {
-        $this->initializeContaoFramework();
-
-        $controller = new BackendPage();
-
-        return $controller->run();
-    }
-
-    /**
-     * @Route("/contao/popup", name="contao_backend_popup")
-     */
+    #[Route('/popup', name: 'contao_backend_popup', defaults: ['_store_referrer' => false])]
     public function popupAction(): Response
     {
         $this->initializeContaoFramework();
@@ -155,9 +118,7 @@ class BackendController extends AbstractController
         return $controller->run();
     }
 
-    /**
-     * @Route("/contao/alerts", name="contao_backend_alerts")
-     */
+    #[Route('/alerts', name: 'contao_backend_alerts', defaults: ['_store_referrer' => false])]
     public function alertsAction(): Response
     {
         $this->initializeContaoFramework();
@@ -171,25 +132,22 @@ class BackendController extends AbstractController
      * Redirects the user to the Contao back end and adds the picker query parameter.
      * It will determine the current provider URL based on the value, which is usually
      * read dynamically via JavaScript.
-     *
-     * @throws BadRequestHttpException
-     *
-     * @Route("/contao/picker", name="contao_backend_picker")
      */
+    #[Route('/picker', name: 'contao_backend_picker', defaults: ['_store_referrer' => false])]
     public function pickerAction(Request $request): RedirectResponse
     {
         $extras = [];
 
         if ($request->query->has('extras')) {
-            $extras = $request->query->get('extras');
+            $extras = $request->query->all('extras');
 
-            if (!\is_array($extras)) {
+            if ([] === $extras) {
                 throw new BadRequestHttpException('Invalid picker extras');
             }
         }
 
         $config = new PickerConfig($request->query->get('context'), $extras, $request->query->get('value'));
-        $picker = $this->get('contao.picker.builder')->create($config);
+        $picker = $this->container->get('contao.picker.builder')->create($config);
 
         if (null === $picker) {
             throw new BadRequestHttpException('Unsupported picker context');
@@ -198,12 +156,32 @@ class BackendController extends AbstractController
         return new RedirectResponse($picker->getCurrentUrl());
     }
 
+    #[Route('/{parameters}', name: 'contao_backend_fallback', requirements: ['parameters' => '.*'], defaults: ['_store_referrer' => false], priority: -1000)]
+    public function backendFallback(): Response
+    {
+        // Backwards compatibility: render the legacy bundle template if it exists
+        $template = $this->container->get('twig')->getLoader()->exists('@ContaoCore/Error/backend.html.twig')
+            ? '@ContaoCore/Error/backend.html.twig'
+            : '@Contao/error/backend.html.twig';
+
+        return $this->render(
+            $template,
+            [
+                'language' => 'en',
+                'statusName' => 'Page Not Found',
+                'exception' => 'The requested page does not exist.',
+                'template' => $template,
+            ],
+            new Response('', 404),
+        );
+    }
+
     public static function getSubscribedServices(): array
     {
         $services = parent::getSubscribedServices();
 
         $services['contao.picker.builder'] = PickerBuilderInterface::class;
-        $services['uri_signer'] = 'uri_signer'; // FIXME: adjust this once https://github.com/symfony/symfony/pull/35298 has been merged
+        $services['uri_signer'] = UriSigner::class;
 
         return $services;
     }

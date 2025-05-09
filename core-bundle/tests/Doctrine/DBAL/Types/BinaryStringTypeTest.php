@@ -13,28 +13,23 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Tests\Doctrine\DBAL\Types;
 
 use Contao\CoreBundle\Doctrine\DBAL\Types\BinaryStringType;
-use Doctrine\DBAL\Platforms\AbstractPlatform;
+use Doctrine\DBAL\Platforms\MySQLPlatform;
 use Doctrine\DBAL\Types\Type;
-use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 
 class BinaryStringTypeTest extends TestCase
 {
-    /**
-     * @var BinaryStringType|Type
-     */
-    private $type;
-
-    public static function setUpBeforeClass(): void
-    {
-        parent::setUpBeforeClass();
-
-        Type::addType(BinaryStringType::NAME, BinaryStringType::class);
-    }
+    private Type $type;
 
     protected function setUp(): void
     {
         parent::setUp();
+
+        if (Type::hasType(BinaryStringType::NAME)) {
+            Type::overrideType(BinaryStringType::NAME, BinaryStringType::class);
+        } else {
+            Type::addType(BinaryStringType::NAME, BinaryStringType::class);
+        }
 
         $this->type = Type::getType(BinaryStringType::NAME);
     }
@@ -43,11 +38,10 @@ class BinaryStringTypeTest extends TestCase
     {
         $fieldDefinition = ['fixed' => true];
 
-        /** @var AbstractPlatform&MockObject $platform */
         $platform = $this
-            ->getMockBuilder(AbstractPlatform::class)
+            ->getMockBuilder(MySQLPlatform::class)
             ->onlyMethods(['getBinaryTypeDeclarationSQL', 'getBlobTypeDeclarationSQL'])
-            ->getMockForAbstractClass()
+            ->getMock()
         ;
 
         $platform
@@ -68,11 +62,10 @@ class BinaryStringTypeTest extends TestCase
     {
         $fieldDefinition = ['fixed' => false];
 
-        /** @var AbstractPlatform&MockObject $platform */
         $platform = $this
-            ->getMockBuilder(AbstractPlatform::class)
+            ->getMockBuilder(MySQLPlatform::class)
             ->onlyMethods(['getBinaryTypeDeclarationSQL', 'getBlobTypeDeclarationSQL'])
-            ->getMockForAbstractClass()
+            ->getMock()
         ;
 
         $platform
@@ -96,6 +89,6 @@ class BinaryStringTypeTest extends TestCase
 
     public function testRequiresAnSqlCommentHintForTheCustomType(): void
     {
-        $this->assertTrue($this->type->requiresSQLCommentHint($this->getMockForAbstractClass(AbstractPlatform::class)));
+        $this->assertTrue($this->type->requiresSQLCommentHint($this->createMock(MySQLPlatform::class)));
     }
 }

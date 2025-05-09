@@ -16,7 +16,9 @@ use Contao\CoreBundle\EventListener\HttpCache\StripQueryParametersSubscriber;
 use FOS\HttpCache\SymfonyCache\CacheEvent;
 use FOS\HttpCache\SymfonyCache\CacheInvalidation;
 use FOS\HttpCache\SymfonyCache\Events;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\HttpFoundation\HeaderUtils;
 use Symfony\Component\HttpFoundation\Request;
 
 class StripQueryParametersSubscriberTest extends TestCase
@@ -28,9 +30,7 @@ class StripQueryParametersSubscriberTest extends TestCase
         $this->assertSame([Events::PRE_HANDLE => 'preHandle'], $subscriber::getSubscribedEvents());
     }
 
-    /**
-     * @dataProvider queryParametersProvider
-     */
+    #[DataProvider('queryParametersProvider')]
     public function testQueryParametersAreStrippedCorrectly(array $parameters, array $expectedParameters, array $allowList = [], array $removeFromDenyList = []): void
     {
         $request = Request::create('/', 'GET', $parameters);
@@ -41,9 +41,10 @@ class StripQueryParametersSubscriberTest extends TestCase
         $subscriber->preHandle($event);
 
         $this->assertSame($expectedParameters, $request->query->all());
+        $this->assertSame(array_map(\strval(...), $expectedParameters), HeaderUtils::parseQuery($request->server->get('QUERY_STRING')));
     }
 
-    public function queryParametersProvider(): \Generator
+    public static function queryParametersProvider(): iterable
     {
         yield [
             ['page' => 42, 'query' => 'foobar'],

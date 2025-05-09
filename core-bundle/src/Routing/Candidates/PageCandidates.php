@@ -13,34 +13,20 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Routing\Candidates;
 
 use Contao\CoreBundle\Routing\Page\PageRegistry;
+use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\Connection;
-use Doctrine\DBAL\FetchMode;
 use Doctrine\DBAL\Query\QueryBuilder;
 use Symfony\Component\HttpFoundation\Request;
 
 class PageCandidates extends AbstractCandidates
 {
-    /**
-     * @var Connection
-     */
-    private $connection;
+    private bool $initialized = false;
 
-    /**
-     * @var PageRegistry
-     */
-    private $pageRegistry;
-
-    /**
-     * @var bool
-     */
-    private $initialized = false;
-
-    public function __construct(Connection $connection, PageRegistry $pageRegistry)
-    {
+    public function __construct(
+        private readonly Connection $connection,
+        private readonly PageRegistry $pageRegistry,
+    ) {
         parent::__construct([], []);
-
-        $this->connection = $connection;
-        $this->pageRegistry = $pageRegistry;
     }
 
     public function getCandidates(Request $request): array
@@ -56,7 +42,9 @@ class PageCandidates extends AbstractCandidates
         $hasRegex = $this->addRegexQuery($qb, $request->getPathInfo());
 
         if ($hasRoot || $hasRegex) {
-            return array_unique(array_merge($candidates, $qb->execute()->fetchAll(FetchMode::COLUMN)));
+            $result = $qb->executeQuery();
+
+            return array_unique([...$candidates, ...$result->fetchFirstColumn()]);
         }
 
         return $candidates;
@@ -70,7 +58,7 @@ class PageCandidates extends AbstractCandidates
 
         $candidates[] = '/';
 
-        $queryBuilder->orWhere("type='root' AND (dns=:httpHost OR dns='')");
+        $queryBuilder->orWhere("type = 'root' AND (dns = :httpHost OR dns = '')");
         $queryBuilder->setParameter('httpHost', $httpHost);
 
         return true;
@@ -78,47 +66,54 @@ class PageCandidates extends AbstractCandidates
 
     private function addRegexQuery(QueryBuilder $queryBuilder, string $pathInfo): bool
     {
-        $pathMap = $this->pageRegistry->getPathRegex();
-
-        if (empty($pathMap)) {
+        if (!$pathMap = $this->pageRegistry->getPathRegex()) {
             return false;
         }
 
         $paths = [];
 
         foreach ($pathMap as $type => $pathRegex) {
-            $paths[] = '(?P<'.$type.'>'.substr($pathRegex, 2, strrpos($pathRegex, '$') - 2).')';
+            // Remove existing named sub-patterns
+            $pathRegex = preg_replace('/\?P<[^>]+>/', '', $pathRegex);
+
+            $path = '(?P<'.$type.'>'.substr($pathRegex, 2, strrpos($pathRegex, '$') - 2).')';
+            $lastParam = strrpos($path, '[^/]++');
+
+            if (false !== $lastParam) {
+                $path = substr_replace($path, '[^/]+?', $lastParam, 6);
+            }
+
+            $paths[] = $path;
         }
 
         $prefixes = array_map(
-            static function ($prefix) {
-                return $prefix ? preg_quote('/'.$prefix, '#') : '';
-            },
-            $this->urlPrefixes
+            static fn ($prefix) => $prefix ? preg_quote('/'.$prefix, '#') : '',
+            $this->urlPrefixes,
         );
 
         preg_match_all(
-            '#^('.implode('|', $prefixes).')('.implode('|', $paths).')('.implode('|', array_map('preg_quote', $this->urlSuffixes)).')'.'$#sD',
+            '#^('.implode('|', $prefixes).')('.implode('|', $paths).')('.implode('|', array_map(preg_quote(...), $this->urlSuffixes)).')$#sD',
             $pathInfo,
-            $matches
+            $matches,
         );
 
         $types = array_keys(array_intersect_key($pathMap, array_filter($matches)));
 
-        if (empty($types)) {
+        if (!$types) {
             return false;
         }
 
         $queryBuilder
             ->orWhere('type IN (:types)')
-            ->setParameter('types', $types, Connection::PARAM_STR_ARRAY)
+            ->setParameter('types', $types, ArrayParameterType::STRING)
         ;
 
         return true;
     }
 
     /**
-     * Lazy-initialize because we do not want to query the database when creating the service.
+     * Lazy-initialize because we do not want to query the database when
+     * creating the service.
      */
     private function initialize(): void
     {

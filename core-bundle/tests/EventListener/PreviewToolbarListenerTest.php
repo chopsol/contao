@@ -12,11 +12,16 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\EventListener;
 
+use Contao\CoreBundle\Csp\CspParser;
 use Contao\CoreBundle\EventListener\PreviewToolbarListener;
-use Contao\CoreBundle\Routing\ScopeMatcher;
+use Contao\CoreBundle\Routing\ResponseContext\Csp\CspHandlerFactory;
+use Contao\CoreBundle\Security\Authentication\Token\TokenChecker;
 use Contao\CoreBundle\Tests\TestCase;
+use Nelmio\SecurityBundle\ContentSecurityPolicy\PolicyManager;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\MockObject\MockObject;
 use Symfony\Component\HttpFoundation\HeaderBag;
+use Symfony\Component\HttpFoundation\ParameterBag;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\Session\Session;
@@ -26,32 +31,30 @@ use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 use Symfony\Component\Routing\RequestContext;
 use Symfony\Component\Routing\RouterInterface;
 use Twig\Environment;
+use Twig\Loader\LoaderInterface;
 
 class PreviewToolbarListenerTest extends TestCase
 {
-    /**
-     * @dataProvider getInjectToolbarData
-     */
-    public function testInjectsTheToolbarBeforeTheClosingBodyTag($content, $expected): void
+    #[DataProvider('getInjectToolbarData')]
+    public function testInjectsTheToolbarBeforeTheClosingBodyTag(string $content, string $expected): void
     {
         $listener = new PreviewToolbarListener(
-            'preview.php',
             $this->mockScopeMatcher(),
-            $this->getTwigMock(),
-            $this->mockRouterWithContext()
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
         );
-
-        $m = new \ReflectionMethod($listener, 'injectToolbar');
-        $m->setAccessible(true);
 
         $response = new Response($content);
 
+        $m = new \ReflectionMethod($listener, 'injectToolbar');
         $m->invoke($listener, $response, Request::create('/'));
 
         $this->assertSame($expected, $response->getContent());
     }
 
-    public function getInjectToolbarData(): \Generator
+    public static function getInjectToolbarData(): iterable
     {
         yield [
             '<html><head></head><body></body></html>',
@@ -71,16 +74,17 @@ class PreviewToolbarListenerTest extends TestCase
 
         $event = new ResponseEvent(
             $this->createMock(HttpKernelInterface::class),
-            $this->getRequestMock(),
-            HttpKernelInterface::MASTER_REQUEST,
-            $response
+            $this->mockRequest(),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
         );
 
         $listener = new PreviewToolbarListener(
-            'preview.php',
             $this->mockScopeMatcher(),
-            $this->getTwigMock(),
-            $this->mockRouterWithContext()
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
         );
 
         $listener($event);
@@ -88,23 +92,49 @@ class PreviewToolbarListenerTest extends TestCase
         $this->assertSame("<html><head></head><body>\nCONTAO\n</body></html>", $response->getContent());
     }
 
-    public function testDoesNotInjectTheToolbarIfThereIsNoPreviewEntrypoint(): void
+    public function testDoesNotInjectTheToolbarIfThereIsNoBackendUser(): void
     {
         $response = new Response('<html><head></head><body></body></html>');
         $response->headers->set('Content-Type', 'text/html; charset=utf-8');
 
         $event = new ResponseEvent(
             $this->createMock(HttpKernelInterface::class),
-            $this->getRequestMock(),
-            HttpKernelInterface::MASTER_REQUEST,
-            $response
+            $this->mockRequest(false),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
         );
 
         $listener = new PreviewToolbarListener(
-            '',
             $this->mockScopeMatcher(),
-            $this->getTwigMock(),
-            $this->mockRouterWithContext()
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
+        );
+
+        $listener($event);
+
+        $this->assertSame('<html><head></head><body></body></html>', $response->getContent());
+    }
+
+    public function testDoesNotInjectTheToolbarIfPreviewAttributeIsNotSet(): void
+    {
+        $response = new Response('<html><head></head><body></body></html>');
+        $response->headers->set('Content-Type', 'text/html; charset=utf-8');
+
+        $event = new ResponseEvent(
+            $this->createMock(HttpKernelInterface::class),
+            $this->mockRequest(false),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
+        );
+
+        $listener = new PreviewToolbarListener(
+            $this->mockScopeMatcher(),
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
         );
 
         $listener($event);
@@ -119,16 +149,17 @@ class PreviewToolbarListenerTest extends TestCase
 
         $event = new ResponseEvent(
             $this->createMock(HttpKernelInterface::class),
-            $this->getRequestMock(),
-            HttpKernelInterface::MASTER_REQUEST,
-            $response
+            $this->mockRequest(),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
         );
 
         $listener = new PreviewToolbarListener(
-            'preview.php',
             $this->mockScopeMatcher(),
-            $this->getTwigMock(),
-            $this->mockRouterWithContext()
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
         );
 
         $listener($event);
@@ -143,16 +174,17 @@ class PreviewToolbarListenerTest extends TestCase
 
         $event = new ResponseEvent(
             $this->createMock(HttpKernelInterface::class),
-            $this->getRequestMock(false, 'html'),
-            HttpKernelInterface::MASTER_REQUEST,
-            $response
+            $this->mockRequest(),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
         );
 
         $listener = new PreviewToolbarListener(
-            'preview.php',
             $this->mockScopeMatcher(),
-            $this->getTwigMock(),
-            $this->mockRouterWithContext()
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
         );
 
         $listener($event);
@@ -160,9 +192,7 @@ class PreviewToolbarListenerTest extends TestCase
         $this->assertSame('<html><head></head><body></body></html>', $response->getContent());
     }
 
-    /**
-     * @dataProvider getDisallowedStatusCodes
-     */
+    #[DataProvider('getDisallowedStatusCodes')]
     public function testDoesNotInjectToolbarOnDisallowedStatusCodes(int $statusCode, bool $hasSession): void
     {
         $response = new Response('<html><head></head><body></body></html>', $statusCode);
@@ -170,16 +200,17 @@ class PreviewToolbarListenerTest extends TestCase
 
         $event = new ResponseEvent(
             $this->createMock(HttpKernelInterface::class),
-            $this->getRequestMock(false, 'html', $hasSession),
-            HttpKernelInterface::MASTER_REQUEST,
-            $response
+            $this->mockRequest(true, false, 'html', $hasSession),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
         );
 
         $listener = new PreviewToolbarListener(
-            'preview.php',
             $this->mockScopeMatcher(),
-            $this->getTwigMock(),
-            $this->mockRouterWithContext()
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
         );
 
         $listener($event);
@@ -187,7 +218,7 @@ class PreviewToolbarListenerTest extends TestCase
         $this->assertSame('<html><head></head><body></body></html>', $response->getContent());
     }
 
-    public function getDisallowedStatusCodes(): \Generator
+    public static function getDisallowedStatusCodes(): iterable
     {
         yield [100, true];
         yield [301, true];
@@ -200,9 +231,7 @@ class PreviewToolbarListenerTest extends TestCase
         yield [500, false];
     }
 
-    /**
-     * @dataProvider getAllowedStatusCodes
-     */
+    #[DataProvider('getAllowedStatusCodes')]
     public function testInjectsToolbarOnAllowedStatusCodes(int $statusCode, bool $hasSession): void
     {
         $response = new Response('<html><head></head><body></body></html>');
@@ -210,16 +239,17 @@ class PreviewToolbarListenerTest extends TestCase
 
         $event = new ResponseEvent(
             $this->createMock(HttpKernelInterface::class),
-            $this->getRequestMock(false, 'html', $hasSession),
-            HttpKernelInterface::MASTER_REQUEST,
-            $response
+            $this->mockRequest(true, false, 'html', $hasSession),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
         );
 
         $listener = new PreviewToolbarListener(
-            'preview.php',
             $this->mockScopeMatcher(),
-            $this->getTwigMock(),
-            $this->mockRouterWithContext()
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
         );
 
         $listener($event);
@@ -227,7 +257,7 @@ class PreviewToolbarListenerTest extends TestCase
         $this->assertSame("<html><head></head><body>\nCONTAO\n</body></html>", $response->getContent());
     }
 
-    public function getAllowedStatusCodes(): \Generator
+    public static function getAllowedStatusCodes(): iterable
     {
         yield [200, true];
         yield [201, true];
@@ -250,16 +280,17 @@ class PreviewToolbarListenerTest extends TestCase
 
         $event = new ResponseEvent(
             $this->createMock(HttpKernelInterface::class),
-            $this->getRequestMock(),
-            HttpKernelInterface::MASTER_REQUEST,
-            $response
+            $this->mockRequest(),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
         );
 
         $listener = new PreviewToolbarListener(
-            'preview.php',
             $this->mockScopeMatcher(),
-            $this->getTwigMock(),
-            $this->mockRouterWithContext()
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
         );
 
         $listener($event);
@@ -274,16 +305,17 @@ class PreviewToolbarListenerTest extends TestCase
 
         $event = new ResponseEvent(
             $this->createMock(HttpKernelInterface::class),
-            $this->getRequestMock(true),
-            HttpKernelInterface::MASTER_REQUEST,
-            $response
+            $this->mockRequest(true, true),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
         );
 
         $listener = new PreviewToolbarListener(
-            'preview.php',
             $this->mockScopeMatcher(),
-            $this->getTwigMock(),
-            $this->mockRouterWithContext()
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
         );
 
         $listener($event);
@@ -298,16 +330,17 @@ class PreviewToolbarListenerTest extends TestCase
 
         $event = new ResponseEvent(
             $this->createMock(HttpKernelInterface::class),
-            $this->getRequestMock(false, 'json'),
-            HttpKernelInterface::MASTER_REQUEST,
-            $response
+            $this->mockRequest(true, false, 'json'),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
         );
 
         $listener = new PreviewToolbarListener(
-            'preview.php',
             $this->mockScopeMatcher(),
-            $this->getTwigMock(),
-            $this->mockRouterWithContext()
+            $this->mockTokenChecker(),
+            $this->mockTwig(),
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
         );
 
         $listener($event);
@@ -315,13 +348,65 @@ class PreviewToolbarListenerTest extends TestCase
         $this->assertSame('<html><head></head><body></body></html>', $response->getContent());
     }
 
-    /**
-     * @return Request&MockObject
-     */
-    protected function getRequestMock(bool $isXmlHttpRequest = false, string $requestFormat = 'html', bool $hasSession = true): Request
+    #[DataProvider('providePreviewToolbarTemplateScenarios')]
+    public function testRendersCorrectTemplate(bool $legacyTemplateExists, string $expectedTemplate): void
+    {
+        $response = new Response('<html><head></head><body></body></html>');
+        $response->headers->set('Content-Type', 'text/html; charset=utf-8');
+
+        $event = new ResponseEvent(
+            $this->createMock(HttpKernelInterface::class),
+            $this->mockRequest(),
+            HttpKernelInterface::MAIN_REQUEST,
+            $response,
+        );
+
+        $loader = $this->createMock(LoaderInterface::class);
+        $loader
+            ->method('exists')
+            ->with('@ContaoCore/Frontend/preview_toolbar_base_js.html.twig')
+            ->willReturn($legacyTemplateExists)
+        ;
+
+        $twig = $this->createMock(Environment::class);
+        $twig
+            ->method('getLoader')
+            ->willReturn($loader)
+        ;
+
+        $twig
+            ->expects($this->once())
+            ->method('render')
+            ->with($expectedTemplate, $this->anything())
+        ;
+
+        $listener = new PreviewToolbarListener(
+            $this->mockScopeMatcher(),
+            $this->mockTokenChecker(),
+            $twig,
+            $this->mockRouterWithContext(),
+            new CspHandlerFactory(new CspParser(new PolicyManager())),
+        );
+
+        $listener($event);
+    }
+
+    public static function providePreviewToolbarTemplateScenarios(): iterable
+    {
+        yield 'legacy template' => [true, '@ContaoCore/Frontend/preview_toolbar_base_js.html.twig'];
+
+        yield 'modern template' => [false, '@Contao/frontend_preview/toolbar_js.html.twig'];
+    }
+
+    private function mockRequest(bool $isPreview = true, bool $isXmlHttpRequest = false, string $requestFormat = 'html', bool $hasSession = true): Request&MockObject
     {
         $request = $this->createMock(Request::class);
         $request->headers = new HeaderBag();
+        $request->attributes = new ParameterBag();
+
+        if ($isPreview) {
+            $request->attributes->set('_preview', true);
+        }
 
         $request
             ->method('isXmlHttpRequest')
@@ -345,43 +430,23 @@ class PreviewToolbarListenerTest extends TestCase
         return $request;
     }
 
-    /**
-     * @return ScopeMatcher&MockObject
-     */
-    protected function mockScopeMatcher(): ScopeMatcher
-    {
-        $scopeMatcher = $this->createMock(ScopeMatcher::class);
-        $scopeMatcher
-            ->method('isFrontendMasterRequest')
-            ->willReturn(true)
-        ;
-
-        return $scopeMatcher;
-    }
-
-    /**
-     * @return Environment&MockObject
-     */
-    private function getTwigMock(string $render = 'CONTAO'): Environment
+    private function mockTwig(): Environment&MockObject
     {
         $twig = $this->createMock(Environment::class);
         $twig
             ->method('render')
-            ->willReturn($render)
+            ->willReturn('CONTAO')
         ;
 
         return $twig;
     }
 
-    /**
-     * @return RouterInterface&MockObject
-     */
-    private function mockRouterWithContext(array $expectedParameters = [], string $expectedRoute = 'contao_backend_switch', int $referenceType = UrlGeneratorInterface::ABSOLUTE_PATH): RouterInterface
+    private function mockRouterWithContext(): RouterInterface&MockObject
     {
         $router = $this->createMock(RouterInterface::class);
         $router
             ->method('generate')
-            ->with($expectedRoute, $expectedParameters, $referenceType)
+            ->with('contao_backend_switch', [], UrlGeneratorInterface::ABSOLUTE_PATH)
         ;
 
         $router
@@ -390,5 +455,16 @@ class PreviewToolbarListenerTest extends TestCase
         ;
 
         return $router;
+    }
+
+    private function mockTokenChecker(): TokenChecker&MockObject
+    {
+        $tokenChecker = $this->createMock(TokenChecker::class);
+        $tokenChecker
+            ->method('hasBackendUser')
+            ->willReturn(true)
+        ;
+
+        return $tokenChecker;
     }
 }

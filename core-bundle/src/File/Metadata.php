@@ -23,27 +23,47 @@ namespace Contao\CoreBundle\File;
  */
 class Metadata
 {
-    public const VALUE_ALT = 'alt';
-    public const VALUE_CAPTION = 'caption';
-    public const VALUE_TITLE = 'title';
-    public const VALUE_URL = 'link';
+    final public const VALUE_ALT = 'alt';
+
+    final public const VALUE_CAPTION = 'caption';
+
+    final public const VALUE_TITLE = 'title';
+
+    final public const VALUE_URL = 'link';
+
+    final public const VALUE_UUID = 'uuid';
+
+    final public const VALUE_LICENSE = 'license';
 
     /**
-     * Key-value pairs of metadata.
-     *
-     * @var array<string, mixed>
+     * @param array<string, mixed>      $values          Key-value pairs of metadata
+     * @param array<string, array>|null $schemaOrgJsonLd JSON-LD data where the key matches the schema.org type
      */
-    private $values;
+    public function __construct(
+        private readonly array $values,
+        private array|null $schemaOrgJsonLd = null,
+    ) {
+    }
 
-    public function __construct(array $values)
+    /**
+     * Returns a new metadata representation that also contains the given values.
+     * Existing keys will be overwritten.
+     *
+     * @param array<string, mixed> $values
+     */
+    public function with(array $values): self
     {
-        $this->values = $values;
+        if (!$values) {
+            return $this;
+        }
+
+        return new self([...$this->values, ...$values]);
     }
 
     /**
      * Returns a value or null if the value was not found.
      */
-    public function get(string $key)
+    public function get(string $key): mixed
     {
         return $this->values[$key] ?? null;
     }
@@ -69,6 +89,19 @@ class Metadata
     }
 
     /**
+     * Returns a UUID reference in ASCII format or null if not set.
+     */
+    public function getUuid(): string|null
+    {
+        return $this->values[self::VALUE_UUID] ?? null;
+    }
+
+    public function getLicense(): string
+    {
+        return $this->values[self::VALUE_LICENSE] ?? '';
+    }
+
+    /**
      * Returns true if this container contains a given value, false otherwise.
      */
     public function has(string $key): bool
@@ -89,6 +122,50 @@ class Metadata
      */
     public function empty(): bool
     {
-        return empty($this->values);
+        return !$this->values;
+    }
+
+    public function getSchemaOrgData(string|null $type = null): array
+    {
+        // Lazy initialize
+        if (null === $this->schemaOrgJsonLd) {
+            $this->extractBasicSchemaOrgData();
+        }
+
+        if (null === $type) {
+            return $this->schemaOrgJsonLd;
+        }
+
+        return $this->schemaOrgJsonLd[$type] ?? [];
+    }
+
+    private function extractBasicSchemaOrgData(): void
+    {
+        if ($this->has(self::VALUE_TITLE)) {
+            $this->schemaOrgJsonLd['AudioObject']['name'] = $this->getTitle();
+            $this->schemaOrgJsonLd['ImageObject']['name'] = $this->getTitle();
+            $this->schemaOrgJsonLd['MediaObject']['name'] = $this->getTitle();
+            $this->schemaOrgJsonLd['VideoObject']['name'] = $this->getTitle();
+            $this->schemaOrgJsonLd['DigitalDocument']['name'] = $this->getTitle();
+            $this->schemaOrgJsonLd['SpreadsheetDigitalDocument']['name'] = $this->getTitle();
+        }
+
+        if ($this->has(self::VALUE_CAPTION)) {
+            $this->schemaOrgJsonLd['AudioObject']['caption'] = $this->getCaption();
+            $this->schemaOrgJsonLd['ImageObject']['caption'] = $this->getCaption();
+            $this->schemaOrgJsonLd['MediaObject']['caption'] = $this->getCaption();
+            $this->schemaOrgJsonLd['VideoObject']['caption'] = $this->getCaption();
+            $this->schemaOrgJsonLd['DigitalDocument']['caption'] = $this->getCaption();
+            $this->schemaOrgJsonLd['SpreadsheetDigitalDocument']['caption'] = $this->getCaption();
+        }
+
+        if ($this->has(self::VALUE_LICENSE)) {
+            $this->schemaOrgJsonLd['AudioObject']['license'] = $this->getLicense();
+            $this->schemaOrgJsonLd['ImageObject']['license'] = $this->getLicense();
+            $this->schemaOrgJsonLd['MediaObject']['license'] = $this->getLicense();
+            $this->schemaOrgJsonLd['VideoObject']['license'] = $this->getLicense();
+            $this->schemaOrgJsonLd['DigitalDocument']['license'] = $this->getLicense();
+            $this->schemaOrgJsonLd['SpreadsheetDigitalDocument']['license'] = $this->getLicense();
+        }
     }
 }

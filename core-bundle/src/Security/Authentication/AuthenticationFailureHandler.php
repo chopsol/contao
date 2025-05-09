@@ -12,56 +12,29 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Security\Authentication;
 
-use Contao\CoreBundle\Monolog\ContaoContext;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
-use Symfony\Component\Security\Core\Exception\AccountStatusException;
 use Symfony\Component\Security\Core\Exception\AuthenticationException;
-use Symfony\Component\Security\Core\Security;
-use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationFailureHandlerInterface;
+use Symfony\Component\Security\Http\SecurityRequestAttributes;
 
 class AuthenticationFailureHandler implements AuthenticationFailureHandlerInterface
 {
-    /**
-     * @var LoggerInterface
-     */
-    private $logger;
-
-    public function __construct(LoggerInterface $logger = null)
+    public function __construct(private readonly LoggerInterface|null $logger = null)
     {
-        $this->logger = $logger;
     }
 
     /**
-     * Logs the security exception to the Contao back end.
-     *
-     * @throws \RuntimeException
+     * Logs the security exception.
      */
     public function onAuthenticationFailure(Request $request, AuthenticationException $exception): Response
     {
-        if (null !== $this->logger) {
-            $this->logException($request, $exception);
-        }
+        $this->logger?->info($exception->getMessage());
 
-        $request->getSession()->set(Security::AUTHENTICATION_ERROR, $exception);
+        $request->getSession()->set(SecurityRequestAttributes::AUTHENTICATION_ERROR, $exception);
 
         return new RedirectResponse($request->getUri());
-    }
-
-    private function logException(Request $request, AuthenticationException $exception): void
-    {
-        if ($exception instanceof AccountStatusException && ($user = $exception->getUser()) instanceof UserInterface) {
-            $username = $user->getUsername();
-        } else {
-            $username = $request->request->get('username');
-        }
-
-        $this->logger->info(
-            $exception->getMessage(),
-            ['contao' => new ContaoContext(__METHOD__, ContaoContext::ACCESS, $username)]
-        );
     }
 }

@@ -13,29 +13,31 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Tests\EventListener\DataContainer;
 
 use Contao\CoreBundle\EventListener\DataContainer\PageUrlListener;
-use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\CoreBundle\Search\Document;
-use Contao\CoreBundle\Search\Indexer\IndexerInterface;
+use Contao\CoreBundle\Exception\RouteParametersException;
+use Contao\CoreBundle\Framework\Adapter;
+use Contao\CoreBundle\Routing\Matcher\UrlMatcher;
+use Contao\CoreBundle\Routing\Page\PageRegistry;
+use Contao\CoreBundle\Routing\Page\PageRoute;
 use Contao\CoreBundle\Slug\Slug;
 use Contao\CoreBundle\Tests\TestCase;
 use Contao\DataContainer;
 use Contao\Input;
 use Contao\PageModel;
 use Doctrine\DBAL\Connection;
-use Doctrine\DBAL\Driver\Statement;
-use Doctrine\DBAL\FetchMode;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Constraint\IsType;
 use PHPUnit\Framework\MockObject\MockObject;
+use Symfony\Cmf\Component\Routing\RouteObjectInterface;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Routing\RouterInterface;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
 class PageUrlListenerTest extends TestCase
 {
-    /**
-     * @dataProvider generatesAliasProvider
-     */
-    public function testGeneratesAlias(array $activeRecord, string $expectedAlias): void
+    #[DataProvider('generatesAliasProvider')]
+    public function testGeneratesAlias(array $currentRecord, array $input, string $slugResult, string $expectedAlias): void
     {
-        /** @var MockObject&PageModel $page */
-        $page = $this->mockClassWithProperties(PageModel::class, $activeRecord);
+        $page = $this->mockClassWithProperties(PageModel::class, $currentRecord);
 
         $pageAdapter = $this->mockAdapter(['findWithDetails']);
         $pageAdapter
@@ -45,133 +47,199 @@ class PageUrlListenerTest extends TestCase
             ->willReturn($page)
         ;
 
-        $framework = $this->mockContaoFramework([PageModel::class => $pageAdapter]);
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter($input),
+        ]);
+
+        $expectedTitle = $input['title'] ?? $page->title;
 
         $slug = $this->createMock(Slug::class);
         $slug
             ->expects($this->once())
             ->method('generate')
-            ->with($page->title, $page->id, $this->isType('callable'))
-            ->willReturn($page->alias)
+            ->with($expectedTitle, $page->id, new IsType('callable'))
+            ->willReturn($slugResult)
         ;
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => $page->id,
-                'activeRecord' => (object) $activeRecord,
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => $page->id]);
 
         $listener = new PageUrlListener(
             $framework,
             $slug,
             $this->createMock(TranslatorInterface::class),
-            $this->mockConnectionWithStatement(),
-            $this->createMock(IndexerInterface::class)
+            $this->mockConnection(),
+            $this->mockPageRegistry(),
+            $this->mockRouter(),
+            new UrlMatcher(),
         );
 
         $this->assertSame($expectedAlias, $listener->generateAlias('', $dc));
     }
 
-    public function generatesAliasProvider(): \Generator
+    public static function generatesAliasProvider(): iterable
     {
-        yield [
+        yield 'Test alias without changes and no folderUrl' => [
             [
                 'id' => 17,
                 'title' => 'Foo',
-                'alias' => 'foo',
                 'useFolderUrl' => false,
                 'folderUrl' => '',
             ],
+            [],
+            'foo',
             'foo',
         ];
 
-        yield [
-            [
-                'id' => 22,
-                'title' => 'Bar',
-                'alias' => 'bar',
-                'useFolderUrl' => false,
-                'folderUrl' => '',
-            ],
-            'bar',
-        ];
-
-        yield [
+        yield 'Test alias without changes and folderUrl' => [
             [
                 'id' => 17,
                 'title' => 'Foo',
-                'alias' => 'foo',
                 'useFolderUrl' => true,
                 'folderUrl' => 'bar/',
             ],
+            [],
+            'foo',
             'bar/foo',
+        ];
+
+        yield 'Test alias when changing the title and without folderUrl' => [
+            [
+                'id' => 17,
+                'title' => 'Foo',
+                'useFolderUrl' => false,
+                'folderUrl' => '',
+            ],
+            [
+                'title' => 'Bar',
+            ],
+            'bar',
+            'bar',
+        ];
+
+        yield 'Test alias when changing the title and folderUrl' => [
+            [
+                'id' => 17,
+                'title' => 'Foo',
+                'useFolderUrl' => true,
+                'folderUrl' => 'bar/',
+            ],
+            [
+                'title' => 'Bar',
+            ],
+            'bar',
+            'bar/bar',
         ];
     }
 
-    /**
-     * @dataProvider duplicateAliasProvider
-     */
-    public function testChecksForDuplicatesWhenGeneratingAlias(array $activeRecord, array $pages, array $aliasIds, string $value, string $generated, string $expectedQuery, bool $expectExists): void
+    #[DataProvider('duplicateAliasProvider')]
+    public function testChecksForDuplicatesWhenGeneratingAlias(array $currentRecord, array $pages, string $value, string $generated, bool $expectExists, bool $throwParametersException = false): void
     {
-        $framework = $this->mockFrameworkWithPages([], $activeRecord, ...$pages);
+        $currentPage = $this->mockClassWithProperties(PageModel::class, $currentRecord);
+        $currentRoute = new PageRoute($currentPage);
+
+        $aliasPages = [];
+        $aliasRoutes = [];
+
+        foreach ($pages as $page) {
+            $aliasPage = $this->mockClassWithProperties(PageModel::class, $page);
+            $aliasPages[] = $aliasPage;
+            $aliasRoutes[] = new PageRoute($aliasPage);
+        }
+
+        $pageAdapter = $this->mockAdapter(['findWithDetails', 'findSimilarByAlias']);
+        $pageAdapter
+            ->expects($this->once())
+            ->method('findWithDetails')
+            ->with($currentRecord['id'])
+            ->willReturn($currentPage)
+        ;
+
+        $pageAdapter
+            ->expects($this->once())
+            ->method('findSimilarByAlias')
+            ->with($currentPage)
+            ->willReturn($aliasPages)
+        ;
+
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter([]),
+        ]);
 
         $slug = $this->createMock(Slug::class);
         $slug
             ->expects($this->once())
             ->method('generate')
             ->with(
-                $activeRecord['title'],
-                $activeRecord['id'],
+                $currentRecord['title'],
+                $currentRecord['id'],
                 $this->callback(
-                    function (callable $callback) use ($generated, $expectExists) {
-                        $this->assertSame(
-                            $expectExists,
-                            $callback($generated)
-                        );
+                    function (callable $callback) use ($expectExists, $generated) {
+                        $this->assertSame($expectExists, $callback($generated));
 
                         return true;
-                    }
-                )
+                    },
+                ),
             )
             ->willReturn($generated)
         ;
 
-        $connection = $this->mockConnection(
-            array_merge([$activeRecord], $pages),
-            [$activeRecord['id']],
-            [$expectedQuery],
-            [$aliasIds]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => $currentRecord['id']]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn($currentRecord)
+        ;
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => $activeRecord['id'],
-                'activeRecord' => (object) $activeRecord,
-            ]
-        );
+        $pageRegistry = $this->mockPageRegistry(array_fill(0, \count($pages) + 1, true), [$currentRoute, ...$aliasRoutes]);
 
         $listener = new PageUrlListener(
             $framework,
             $slug,
             $this->createMock(TranslatorInterface::class),
-            $connection,
-            $this->createMock(IndexerInterface::class)
+            $this->mockConnection(),
+            $pageRegistry,
+            $this->mockRouter($throwParametersException ? false : $currentRoute),
+            new UrlMatcher(),
         );
 
         $listener->generateAlias('', $dc);
     }
 
-    /**
-     * @dataProvider duplicateAliasProvider
-     */
-    public function testChecksForDuplicatesWhenValidatingAlias(array $activeRecord, array $pages, array $aliasIds, string $value, string $generated, string $expectQuery, bool $expectExists): void
+    #[DataProvider('duplicateAliasProvider')]
+    public function testChecksForDuplicatesWhenValidatingAlias(array $currentRecord, array $pages, string $value, string $generated, bool $expectExists, bool $throwParametersException = false): void
     {
-        $framework = $this->mockFrameworkWithPages([], $activeRecord, ...$pages);
+        $currentPage = $this->mockClassWithProperties(PageModel::class, $currentRecord);
+        $currentRoute = new PageRoute($currentPage);
+
+        $aliasPages = [];
+        $aliasRoutes = [];
+
+        foreach ($pages as $page) {
+            $aliasPage = $this->mockClassWithProperties(PageModel::class, $page);
+            $aliasPages[] = $aliasPage;
+            $aliasRoutes[] = new PageRoute($aliasPage);
+        }
+
+        $pageAdapter = $this->mockAdapter(['findWithDetails', 'findSimilarByAlias']);
+        $pageAdapter
+            ->expects($this->once())
+            ->method('findWithDetails')
+            ->with($currentRecord['id'])
+            ->willReturn($currentPage)
+        ;
+
+        $pageAdapter
+            ->expects($this->once())
+            ->method('findSimilarByAlias')
+            ->with($currentPage)
+            ->willReturn($aliasPages)
+        ;
+
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter([]),
+        ]);
 
         $slug = $this->createMock(Slug::class);
         $slug
@@ -179,38 +247,144 @@ class PageUrlListenerTest extends TestCase
             ->method('generate')
         ;
 
-        $connection = $this->mockConnection(
-            array_merge([$activeRecord], $pages),
-            [$activeRecord['id']],
-            [$expectQuery],
-            [$aliasIds]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => $currentRecord['id']]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn($currentRecord)
+        ;
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => $activeRecord['id'],
-                'activeRecord' => (object) $activeRecord,
-            ]
-        );
+        $pageRegistry = $this->mockPageRegistry(array_fill(0, \count($pages) + 1, true), [$currentRoute, ...$aliasRoutes]);
 
-        $urlPrefix = $activeRecord['urlPrefix'] ? $activeRecord['urlPrefix'].'/' : '';
-        $url = '/'.$urlPrefix.$value.$activeRecord['urlSuffix'];
-        $translator = $this->mockTranslator('ERR.pageUrlExists', $expectExists ? $url : null);
+        if ($expectExists) {
+            $translator = $this->mockTranslator('ERR.pageUrlNameExists', [$pages[0]['title'], $pages[0]['id']]);
+        } else {
+            $translator = $this->mockTranslator();
+        }
 
         $listener = new PageUrlListener(
             $framework,
             $slug,
             $translator,
-            $connection,
-            $this->createMock(IndexerInterface::class)
+            $this->mockConnection(),
+            $pageRegistry,
+            $this->mockRouter($throwParametersException ? false : $currentRoute),
+            new UrlMatcher(),
         );
 
         $listener->generateAlias($value, $dc);
     }
 
-    public function duplicateAliasProvider(): \Generator
+    #[DataProvider('duplicateAliasProvider')]
+    public function testDoesNotCheckAliasIfCurrentPageIsUnrouteable(array $currentRecord, array $pages, string $value): void
+    {
+        $currentPage = $this->mockClassWithProperties(PageModel::class, $currentRecord);
+
+        $pageAdapter = $this->mockAdapter(['findWithDetails', 'findSimilarByAlias']);
+        $pageAdapter
+            ->expects($this->once())
+            ->method('findWithDetails')
+            ->with($currentRecord['id'])
+            ->willReturn($currentPage)
+        ;
+
+        $pageAdapter
+            ->expects($this->never())
+            ->method('findSimilarByAlias')
+        ;
+
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter([]),
+        ]);
+
+        $slug = $this->createMock(Slug::class);
+        $slug
+            ->expects($this->never())
+            ->method('generate')
+        ;
+
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => $currentRecord['id']]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn($currentRecord)
+        ;
+
+        $listener = new PageUrlListener(
+            $framework,
+            $slug,
+            $this->createMock(TranslatorInterface::class),
+            $this->createMock(Connection::class),
+            $this->mockPageRegistry([false]),
+            $this->mockRouter(),
+            new UrlMatcher(),
+        );
+
+        $this->assertSame($value, $listener->generateAlias($value, $dc));
+    }
+
+    #[DataProvider('duplicateAliasProvider')]
+    public function testDoesNotCheckAliasIfAliasPageIsUnrouteable(array $currentRecord, array $pages, string $value): void
+    {
+        $currentPage = $this->mockClassWithProperties(PageModel::class, $currentRecord);
+        $currentRoute = new PageRoute($currentPage);
+
+        $aliasPages = [];
+        $aliasRoutes = [];
+
+        foreach ($pages as $page) {
+            $aliasPage = $this->mockClassWithProperties(PageModel::class, $page);
+            $aliasPages[] = $aliasPage;
+            $aliasRoutes[] = new PageRoute($aliasPage);
+        }
+
+        $pageAdapter = $this->mockAdapter(['findWithDetails', 'findSimilarByAlias']);
+        $pageAdapter
+            ->expects($this->once())
+            ->method('findWithDetails')
+            ->with($currentRecord['id'])
+            ->willReturn($currentPage)
+        ;
+
+        $pageAdapter
+            ->expects($this->once())
+            ->method('findSimilarByAlias')
+            ->with($currentPage)
+            ->willReturn($aliasPages)
+        ;
+
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter([]),
+        ]);
+
+        $slug = $this->createMock(Slug::class);
+        $slug
+            ->expects($this->never())
+            ->method('generate')
+        ;
+
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => $currentRecord['id']]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn($currentRecord)
+        ;
+
+        $pageRegistry = $this->mockPageRegistry([...[true], ...array_fill(0, \count($pages), false)], [$currentRoute, ...$aliasRoutes]);
+
+        $listener = new PageUrlListener(
+            $framework,
+            $slug,
+            $this->createMock(TranslatorInterface::class),
+            $this->createMock(Connection::class),
+            $pageRegistry,
+            $this->mockRouter($currentRoute),
+            new UrlMatcher(),
+        );
+
+        $this->assertSame($value, $listener->generateAlias($value, $dc));
+    }
+
+    public static function duplicateAliasProvider(): iterable
     {
         yield 'No duplicate aliases' => [
             [
@@ -222,10 +396,9 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ],
             [],
-            [],
-            'foo',
             'foo',
             'foo',
             false,
@@ -241,6 +414,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -251,9 +425,8 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ]],
-            [2],
-            'foo',
             'foo',
             'foo',
             true,
@@ -269,6 +442,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '',
+                'rootLanguage' => 'de',
             ],
             [[
                 'id' => 2,
@@ -279,9 +453,8 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '',
+                'rootLanguage' => 'de',
             ]],
-            [2],
-            'foo',
             'foo',
             'foo',
             true,
@@ -297,6 +470,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -307,9 +481,8 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ]],
-            [2],
-            'foo',
             'foo',
             'foo',
             true,
@@ -325,6 +498,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -335,9 +509,8 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ]],
-            [2],
-            'foo',
             'foo',
             'foo',
             true,
@@ -353,6 +526,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -363,11 +537,41 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ]],
-            [2],
             'foo',
             'foo',
+            true,
+        ];
+
+        yield 'in separate root without language prefix and requireItem' => [
+            [
+                'id' => 1,
+                'title' => 'Foo',
+                'alias' => 'foo',
+                'rootId' => 1,
+                'useFolderUrl' => false,
+                'domain' => '',
+                'urlPrefix' => '',
+                'urlSuffix' => '',
+                'rootLanguage' => 'en',
+                'requireItem' => true,
+            ],
+            [[
+                'id' => 2,
+                'title' => 'Foo',
+                'alias' => 'foo',
+                'rootId' => 2,
+                'useFolderUrl' => false,
+                'domain' => '',
+                'urlPrefix' => '',
+                'urlSuffix' => '',
+                'rootLanguage' => 'en',
+                'requireItem' => true,
+            ]],
             'foo',
+            'foo',
+            true,
             true,
         ];
 
@@ -381,6 +585,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -391,9 +596,8 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'fr',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ]],
-            [2],
-            'foo',
             'foo',
             'foo',
             false,
@@ -409,6 +613,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -419,12 +624,42 @@ class PageUrlListenerTest extends TestCase
                 'domain' => 'example.com',
                 'urlPrefix' => '',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ]],
-            [2],
-            'foo',
             'foo',
             'foo',
             false,
+        ];
+
+        yield 'in separate domain with requireItem' => [
+            [
+                'id' => 1,
+                'title' => 'Foo',
+                'alias' => 'foo',
+                'rootId' => 1,
+                'useFolderUrl' => false,
+                'domain' => '',
+                'urlPrefix' => '',
+                'urlSuffix' => '',
+                'rootLanguage' => 'en',
+                'requireItem' => true,
+            ],
+            [[
+                'id' => 2,
+                'title' => 'Foo',
+                'alias' => 'foo',
+                'rootId' => 2,
+                'useFolderUrl' => false,
+                'domain' => 'example.com',
+                'urlPrefix' => '',
+                'urlSuffix' => '',
+                'rootLanguage' => 'en',
+                'requireItem' => true,
+            ]],
+            'foo',
+            'foo',
+            false,
+            true,
         ];
 
         yield 'with separate url suffix' => [
@@ -437,6 +672,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -447,9 +683,8 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ]],
-            [2],
-            'foo',
             'foo',
             'foo',
             false,
@@ -465,6 +700,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -475,9 +711,8 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '',
+                'rootLanguage' => 'en',
             ]],
-            [2],
-            'foo',
             'foo',
             'foo',
             false,
@@ -493,6 +728,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de/ch',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -503,9 +739,8 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ]],
-            [2],
-            'foo',
             'foo',
             'foo',
             true,
@@ -521,6 +756,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -531,11 +767,10 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'de/ch',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ]],
-            [2],
             'ch/foo',
             'ch/foo',
-            'foo',
             true,
         ];
 
@@ -549,6 +784,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -559,9 +795,8 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => 'ml',
+                'rootLanguage' => 'en',
             ]],
-            [2],
-            'foo',
             'foo',
             'foo',
             true,
@@ -577,6 +812,7 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => 'ml',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -587,11 +823,10 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ]],
-            [2],
             'foo.ht',
             'foo.ht',
-            'foo',
             true,
         ];
 
@@ -599,13 +834,14 @@ class PageUrlListenerTest extends TestCase
             [
                 'id' => 1,
                 'title' => 'Foo',
-                'alias' => 'foo',
+                'alias' => 'bar/foo',
                 'rootId' => 1,
                 'useFolderUrl' => true,
                 'folderUrl' => 'bar/',
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -617,11 +853,10 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ]],
-            [2],
             'bar/foo',
             'foo',
-            'bar/foo',
             true,
         ];
 
@@ -629,13 +864,14 @@ class PageUrlListenerTest extends TestCase
             [
                 'id' => 1,
                 'title' => 'Foo',
-                'alias' => 'foo',
+                'alias' => 'baz/foo',
                 'rootId' => 1,
                 'useFolderUrl' => true,
                 'folderUrl' => 'baz/',
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -647,11 +883,10 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ]],
-            [2],
             'baz/foo',
             'foo',
-            'baz/foo',
             false,
         ];
 
@@ -659,13 +894,14 @@ class PageUrlListenerTest extends TestCase
             [
                 'id' => 1,
                 'title' => 'Foo',
-                'alias' => 'foo',
+                'alias' => 'bar/foo',
                 'rootId' => 1,
                 'useFolderUrl' => true,
                 'folderUrl' => 'bar/',
                 'domain' => '',
                 'urlPrefix' => 'ch/de',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -677,11 +913,10 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => 'ch',
                 'urlSuffix' => 'ml',
+                'rootLanguage' => 'en',
             ]],
-            [2],
             'bar/foo',
             'foo',
-            'bar/foo',
             true,
         ];
 
@@ -689,13 +924,14 @@ class PageUrlListenerTest extends TestCase
             [
                 'id' => 1,
                 'title' => 'Foo',
-                'alias' => 'foo',
+                'alias' => 'baz/foo',
                 'rootId' => 1,
                 'useFolderUrl' => true,
                 'folderUrl' => 'baz/',
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ],
             [[
                 'id' => 2,
@@ -707,293 +943,72 @@ class PageUrlListenerTest extends TestCase
                 'domain' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'en',
             ]],
-            [3],
             'baz/foo',
             'foo',
-            'baz/foo',
             false,
         ];
     }
 
-    public function testPurgesTheSearchIndexOnAliasChange(): void
+    public function testPreventsNumericAliases(): void
     {
-        $statement = $this->createMock(Statement::class);
-        $statement
+        $page = $this->mockClassWithProperties(PageModel::class, ['id' => 17]);
+
+        $pageAdapter = $this->mockAdapter(['findWithDetails']);
+        $pageAdapter
             ->expects($this->once())
-            ->method('fetchAll')
-            ->willReturn(['uri'])
+            ->method('findWithDetails')
+            ->with($page->id)
+            ->willReturn($page)
         ;
 
-        $connection = $this->createMock(Connection::class);
-        $connection
-            ->expects($this->once())
-            ->method('executeQuery')
-            ->with('SELECT url FROM tl_search WHERE pid=:pageId', ['pageId' => 17])
-            ->willReturn($statement)
-        ;
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter([]),
+        ]);
 
-        $searchIndexer = $this->createMock(IndexerInterface::class);
-        $searchIndexer
-            ->expects($this->once())
-            ->method('delete')
-            ->with($this->callback(
-                function ($document) {
-                    $this->assertInstanceOf(Document::class, $document);
-
-                    /** @var Document $document */
-                    $this->assertSame('uri', (string) $document->getUri());
-
-                    return true;
-                }
-            ))
-        ;
-
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 17,
-                'activeRecord' => (object) [
-                    'alias' => 'foo',
-                ],
-            ]
-        );
-
-        $listener = new PageUrlListener(
-            $this->createMock(ContaoFramework::class),
-            $this->createMock(Slug::class),
-            $this->createMock(TranslatorInterface::class),
-            $connection,
-            $searchIndexer
-        );
-
-        $listener->purgeSearchIndexOnAliasChange('bar', $dc);
-    }
-
-    public function testDoesNotPurgeTheSearchIndexWithUnchangedAlias(): void
-    {
-        $connection = $this->createMock(Connection::class);
-        $connection
+        $slug = $this->createMock(Slug::class);
+        $slug
             ->expects($this->never())
-            ->method($this->anything())
+            ->method('generate')
         ;
 
-        $searchIndexer = $this->createMock(IndexerInterface::class);
-        $searchIndexer
-            ->expects($this->never())
-            ->method($this->anything())
-        ;
-
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 17,
-                'activeRecord' => (object) [
-                    'alias' => 'foo',
-                ],
-            ]
-        );
-
-        $listener = new PageUrlListener(
-            $this->createMock(ContaoFramework::class),
-            $this->createMock(Slug::class),
-            $this->createMock(TranslatorInterface::class),
-            $connection,
-            $this->createMock(IndexerInterface::class)
-        );
-
-        $listener->purgeSearchIndexOnAliasChange('foo', $dc);
-    }
-
-    public function testPurgesTheSearchIndexOnDelete(): void
-    {
-        $statement = $this->createMock(Statement::class);
-        $statement
+        $translator = $this->createMock(TranslatorInterface::class);
+        $translator
             ->expects($this->once())
-            ->method('fetchAll')
-            ->willReturn(['uri'])
+            ->method('trans')
+            ->with('ERR.aliasNumeric')
+            ->willReturn('Numeric aliases are not supported!')
         ;
 
-        $connection = $this->createMock(Connection::class);
-        $connection
-            ->expects($this->once())
-            ->method('executeQuery')
-            ->with('SELECT url FROM tl_search WHERE pid=:pageId', ['pageId' => 17])
-            ->willReturn($statement)
-        ;
-
-        $searchIndexer = $this->createMock(IndexerInterface::class);
-        $searchIndexer
-            ->expects($this->once())
-            ->method('delete')
-            ->with($this->callback(
-                function ($document) {
-                    $this->assertInstanceOf(Document::class, $document);
-
-                    /** @var Document $document */
-                    $this->assertSame('uri', (string) $document->getUri());
-
-                    return true;
-                }
-            ))
-        ;
-
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 17,
-            ]
-        );
-
-        $listener = new PageUrlListener(
-            $this->createMock(ContaoFramework::class),
-            $this->createMock(Slug::class),
-            $this->createMock(TranslatorInterface::class),
-            $connection,
-            $searchIndexer
-        );
-
-        $listener->purgeSearchIndexOnDelete($dc);
-    }
-
-    public function testDoesNotPurgeTheSearchIndexWithoutId(): void
-    {
-        $connection = $this->createMock(Connection::class);
-        $connection
-            ->expects($this->never())
-            ->method($this->anything())
-        ;
-
-        $searchIndexer = $this->createMock(IndexerInterface::class);
-        $searchIndexer
-            ->expects($this->never())
-            ->method($this->anything())
-        ;
-
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => null,
-            ]
-        );
-
-        $listener = new PageUrlListener(
-            $this->createMock(ContaoFramework::class),
-            $this->createMock(Slug::class),
-            $this->createMock(TranslatorInterface::class),
-            $connection,
-            $searchIndexer
-        );
-
-        $listener->purgeSearchIndexOnDelete($dc);
-    }
-
-    public function testResetsThePrefixesAndSuffixes(): void
-    {
-        $framework = $this->mockFrameworkWithPages(
-            [],
-            [
-                'id' => 1,
-                'alias' => 'foo',
-                'domain' => '',
-                'urlPrefix' => '',
-                'urlSuffix' => '',
-            ],
-            [
-                'id' => 2,
-                'alias' => 'bar',
-                'domain' => '',
-                'urlPrefix' => '',
-                'urlSuffix' => '',
-            ],
-            [
-                'id' => 3,
-                'alias' => 'baz',
-                'domain' => '',
-                'urlPrefix' => '',
-                'urlSuffix' => '',
-            ]
-        );
-
-        $statement = $this->createMock(Statement::class);
-        $statement
-            ->expects($this->exactly(5))
-            ->method('fetchAll')
-            ->willReturn([])
-        ;
-
-        $connection = $this->createMock(Connection::class);
-        $connection
-            ->expects($this->exactly(5))
-            ->method('executeQuery')
-            ->withConsecutive(
-                [
-                    "SELECT urlPrefix, urlSuffix FROM tl_page WHERE type='root'",
-                ],
-                [
-                    'SELECT id FROM tl_page WHERE alias LIKE :alias AND id!=:id',
-                    [
-                        'alias' => '%foo%',
-                        'id' => 1,
-                    ],
-                ],
-                [
-                    'SELECT id FROM tl_page WHERE alias LIKE :alias AND id!=:id',
-                    [
-                        'alias' => '%bar%',
-                        'id' => 2,
-                    ],
-                ],
-                [
-                    "SELECT urlPrefix, urlSuffix FROM tl_page WHERE type='root'",
-                ],
-                [
-                    'SELECT id FROM tl_page WHERE alias LIKE :alias AND id!=:id',
-                    [
-                        'alias' => '%baz%',
-                        'id' => 3,
-                    ],
-                ]
-            )
-            ->willReturn($statement)
-        ;
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => $page->id]);
 
         $listener = new PageUrlListener(
             $framework,
-            $this->createMock(Slug::class),
-            $this->createMock(TranslatorInterface::class),
-            $connection,
-            $this->createMock(IndexerInterface::class)
+            $slug,
+            $translator,
+            $this->createMock(Connection::class),
+            $this->mockPageRegistry(),
+            $this->mockRouter(),
+            new UrlMatcher(),
         );
 
-        /** @var DataContainer&MockObject $dc1 */
-        $dc1 = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Numeric aliases are not supported!');
 
-        /** @var DataContainer&MockObject $dc2 */
-        $dc2 = $this->mockClassWithProperties(DataContainer::class, ['id' => 2]);
-
-        /** @var DataContainer&MockObject $dc3 */
-        $dc3 = $this->mockClassWithProperties(DataContainer::class, ['id' => 3]);
-
-        $listener->generateAlias('foo', $dc1);
-        $listener->generateAlias('bar', $dc2);
-
-        $listener->reset();
-        $listener->generateAlias('baz', $dc3);
+        $listener->generateAlias('123', $dc);
     }
 
     public function testReturnsValueWhenValidatingUrlPrefix(): void
     {
-        $framework = $this->mockFrameworkWithPages(
-            [
-                'dns' => '',
-                'urlPrefix' => 'de',
-                'urlSuffix' => '.html',
-            ],
+        $inputData = [
+            'dns' => '',
+            'urlPrefix' => 'de',
+            'urlSuffix' => '.html',
+        ];
+
+        $pageModels = $this->getPageModels([
             [
                 'id' => 1,
                 'pid' => 0,
@@ -1001,6 +1016,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'root',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 2,
@@ -1008,57 +1024,69 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'foo',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
-            ]
-        );
+                'rootLanguage' => '',
+            ],
+        ]);
 
-        $connection = $this->mockConnection(
-            [['urlPrefix' => 'de', 'urlSuffix' => '.html']],
-            [2],
-            ['foo'],
-            [[]],
-            true
-        );
+        $pageAdapter = $this->mockAdapter(['findWithDetails', 'findByPid', 'findSimilarByAlias']);
+        $pageAdapter
+            ->method('findWithDetails')
+            ->willReturnCallback(static fn (int $id) => $pageModels['id'][$id] ?? null)
+        ;
+
+        $pageAdapter
+            ->method('findByPid')
+            ->willReturnCallback(static fn (int $pid) => $pageModels['pid'][$pid] ?? null)
+        ;
+
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter($inputData),
+        ]);
+
+        $route = new PageRoute($pageModels['id'][2]);
+        $pageRegistry = $this->mockPageRegistry([true, true], [$route]);
 
         $listener = new PageUrlListener(
             $framework,
             $this->createMock(Slug::class),
             $this->mockTranslator(),
-            $connection,
-            $this->createMock(IndexerInterface::class)
+            $this->mockConnection(true),
+            $pageRegistry,
+            $this->mockRouter($route),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) ['type' => 'root', 'dns' => '', 'urlPrefix' => 'de', 'urlSuffix' => ''],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn(['type' => 'root', 'dns' => '', 'urlPrefix' => 'de', 'urlSuffix' => ''])
+        ;
 
         $listener->validateUrlPrefix('en', $dc);
     }
 
     public function testThrowsExceptionOnDuplicateUrlPrefixInDomain(): void
     {
-        $translator = $this->mockTranslator('ERR.urlPrefixExists', 'en');
-
-        $statement = $this->createMock(Statement::class);
-        $statement
-            ->expects($this->once())
-            ->method('fetchColumn')
-            ->willReturn(1)
-        ;
+        $translator = $this->mockTranslator('ERR.urlPrefixExists', ['en']);
 
         $connection = $this->createMock(Connection::class);
         $connection
             ->expects($this->once())
-            ->method('executeQuery')
+            ->method('fetchOne')
             ->with(
-                "SELECT COUNT(*) FROM tl_page WHERE urlPrefix=:urlPrefix AND dns=:dns AND id!=:rootId AND type='root'",
-                ['urlPrefix' => 'en', 'dns' => 'www.example.com', 'rootId' => 1]
+                <<<'SQL'
+                    SELECT COUNT(*)
+                    FROM tl_page
+                    WHERE
+                        urlPrefix = :urlPrefix
+                        AND dns = :dns
+                        AND id != :rootId
+                        AND type = 'root'
+                    SQL,
+                ['urlPrefix' => 'en', 'dns' => 'www.example.com', 'rootId' => 1],
             )
-            ->willReturn($statement)
+            ->willReturn(1)
         ;
 
         $listener = new PageUrlListener(
@@ -1066,34 +1094,35 @@ class PageUrlListenerTest extends TestCase
             $this->createMock(Slug::class),
             $translator,
             $connection,
-            $this->createMock(IndexerInterface::class)
+            $this->mockPageRegistry(),
+            $this->mockRouter(),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) [
-                    'type' => 'root',
-                    'dns' => 'www.example.com',
-                    'urlPrefix' => 'de',
-                    'urlSuffix' => '',
-                ],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn([
+                'type' => 'root',
+                'dns' => 'www.example.com',
+                'urlPrefix' => 'de',
+                'urlSuffix' => '',
+            ])
+        ;
 
         $listener->validateUrlPrefix('en', $dc);
     }
 
     public function testThrowsExceptionIfUrlPrefixLeadsToDuplicatePages(): void
     {
-        $framework = $this->mockFrameworkWithPages(
-            [
-                'dns' => '',
-                'urlPrefix' => 'de',
-                'urlSuffix' => '.html',
-            ],
+        $inputData = [
+            'dns' => '',
+            'urlPrefix' => 'de',
+            'urlSuffix' => '.html',
+            'rootLanguage' => 'de',
+        ];
+
+        $pageModels = $this->getPageModels([
             [
                 'id' => 1,
                 'pid' => 0,
@@ -1101,6 +1130,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'root',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 2,
@@ -1108,6 +1138,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'foo',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 3,
@@ -1115,6 +1146,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'bar',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 4,
@@ -1122,6 +1154,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'bar/foo',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 5,
@@ -1129,6 +1162,7 @@ class PageUrlListenerTest extends TestCase
                 'type' => 'root',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'de',
             ],
             [
                 'id' => 6,
@@ -1136,48 +1170,62 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'bar/foo',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
-            ]
-        );
+                'rootLanguage' => 'de',
+            ],
+        ]);
+
+        $pageAdapter = $this->mockAdapter(['findWithDetails', 'findByPid', 'findSimilarByAlias']);
+        $pageAdapter
+            ->method('findWithDetails')
+            ->willReturnCallback(static fn (int $id) => $pageModels['id'][$id] ?? null)
+        ;
+
+        $pageAdapter
+            ->method('findByPid')
+            ->willReturnCallback(static fn (int $pid) => $pageModels['pid'][$pid] ?? null)
+        ;
+
+        $pageAdapter
+            ->method('findSimilarByAlias')
+            ->willReturn(null, null, [$pageModels['id'][6]])
+        ;
+
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter($inputData),
+        ]);
 
         // Expects exception
-        $translator = $this->mockTranslator('ERR.pageUrlPrefix', '/de/bar/foo.html');
-
-        $connection = $this->mockConnection(
-            [['urlPrefix' => 'de', 'urlSuffix' => '.html']],
-            [2, 3, 4],
-            ['foo', 'bar', 'bar/foo'],
-            [[], [], [6]],
-            true
-        );
+        $translator = $this->mockTranslator('ERR.pageUrlPrefix', ['/de/bar/foo.html']);
 
         $listener = new PageUrlListener(
             $framework,
             $this->createMock(Slug::class),
             $translator,
-            $connection,
-            $this->createMock(IndexerInterface::class)
+            $this->mockConnection(true),
+            new PageRegistry($this->createMock(Connection::class)),
+            $this->mockRouter(3),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) ['type' => 'root', 'dns' => '', 'urlPrefix' => 'de', 'urlSuffix' => ''],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn(['type' => 'root', 'dns' => '', 'urlPrefix' => 'de', 'urlSuffix' => ''])
+        ;
 
         $listener->validateUrlPrefix('en', $dc);
     }
 
     public function testIgnoresPagesWithoutAliasWhenValidatingUrlPrefix(): void
     {
-        $framework = $this->mockFrameworkWithPages(
-            [
-                'dns' => '',
-                'urlPrefix' => 'de',
-                'urlSuffix' => '.html',
-            ],
+        $inputData = [
+            'dns' => '',
+            'urlPrefix' => 'de',
+            'urlSuffix' => '.html',
+        ];
+
+        $pageModels = $this->getPageModels([
             [
                 'id' => 1,
                 'pid' => 0,
@@ -1185,6 +1233,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'root',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 2,
@@ -1192,6 +1241,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'foo',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 3,
@@ -1199,6 +1249,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => '',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 4,
@@ -1206,6 +1257,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'foo/bar',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 5,
@@ -1213,6 +1265,7 @@ class PageUrlListenerTest extends TestCase
                 'type' => 'root',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'de',
             ],
             [
                 'id' => 6,
@@ -1220,43 +1273,56 @@ class PageUrlListenerTest extends TestCase
                 'alias' => '',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
-            ]
-        );
+                'rootLanguage' => 'de',
+            ],
+        ]);
 
-        $connection = $this->mockConnection(
-            [['urlPrefix' => 'de', 'urlSuffix' => '.html']],
-            [2, 3, 4],
-            [0 => 'foo', 2 => 'foo/bar'],
-            [[], [], [6]],
-            true
-        );
+        $pageAdapter = $this->mockAdapter(['findWithDetails', 'findByPid', 'findSimilarByAlias']);
+        $pageAdapter
+            ->method('findWithDetails')
+            ->willReturnCallback(static fn (int $id) => $pageModels['id'][$id] ?? null)
+        ;
+
+        $pageAdapter
+            ->method('findByPid')
+            ->willReturnCallback(static fn (int $pid) => $pageModels['pid'][$pid] ?? null)
+        ;
+
+        $pageAdapter
+            ->method('findSimilarByAlias')
+            ->willReturn(null, null, [$pageModels['id'][4]])
+        ;
+
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter($inputData),
+        ]);
 
         $listener = new PageUrlListener(
             $framework,
             $this->createMock(Slug::class),
             $this->createMock(TranslatorInterface::class),
-            $connection,
-            $this->createMock(IndexerInterface::class)
+            $this->mockConnection(true),
+            new PageRegistry($this->createMock(Connection::class)),
+            $this->mockRouter(2),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) ['type' => 'root', 'dns' => '', 'urlPrefix' => 'de', 'urlSuffix' => ''],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn(['type' => 'root', 'dns' => '', 'urlPrefix' => 'de', 'urlSuffix' => ''])
+        ;
 
         $listener->validateUrlPrefix('en', $dc);
     }
 
     public function testDoesNotValidateTheUrlPrefixIfPageTypeIsNotRoot(): void
     {
-        $pageAdapter = $this->mockAdapter(['findByPk']);
+        $pageAdapter = $this->mockAdapter(['findById']);
         $pageAdapter
             ->expects($this->never())
-            ->method('findByPk')
+            ->method('findById')
         ;
 
         $framework = $this->mockContaoFramework([PageModel::class => $pageAdapter]);
@@ -1266,30 +1332,29 @@ class PageUrlListenerTest extends TestCase
             $this->createMock(Slug::class),
             $this->createMock(TranslatorInterface::class),
             $this->mockConnectionWithStatement(),
-            $this->createMock(IndexerInterface::class)
+            $this->mockPageRegistry(),
+            $this->mockRouter(),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) [
-                    'type' => 'regular',
-                    'urlPrefix' => 'en',
-                ],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn([
+                'type' => 'regular',
+                'urlPrefix' => 'en',
+            ])
+        ;
 
         $listener->validateUrlPrefix('de/ch', $dc);
     }
 
     public function testDoesNotValidateTheUrlPrefixIfTheValueHasNotChanged(): void
     {
-        $pageAdapter = $this->mockAdapter(['findByPk']);
+        $pageAdapter = $this->mockAdapter(['findById']);
         $pageAdapter
             ->expects($this->never())
-            ->method('findByPk')
+            ->method('findById')
         ;
 
         $framework = $this->mockContaoFramework([PageModel::class => $pageAdapter]);
@@ -1299,30 +1364,29 @@ class PageUrlListenerTest extends TestCase
             $this->createMock(Slug::class),
             $this->createMock(TranslatorInterface::class),
             $this->mockConnectionWithStatement(),
-            $this->createMock(IndexerInterface::class)
+            $this->mockPageRegistry(),
+            $this->mockRouter(),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) [
-                    'type' => 'root',
-                    'urlPrefix' => 'de/ch',
-                ],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn([
+                'type' => 'root',
+                'urlPrefix' => 'de/ch',
+            ])
+        ;
 
         $listener->validateUrlPrefix('de/ch', $dc);
     }
 
     public function testDoesNotValidateTheUrlPrefixIfTheRootPageIsNotFound(): void
     {
-        $pageAdapter = $this->mockAdapter(['findByPk']);
+        $pageAdapter = $this->mockAdapter(['findWithDetails']);
         $pageAdapter
             ->expects($this->once())
-            ->method('findByPk')
+            ->method('findWithDetails')
             ->with(1)
             ->willReturn(null)
         ;
@@ -1334,33 +1398,33 @@ class PageUrlListenerTest extends TestCase
             $this->createMock(Slug::class),
             $this->createMock(TranslatorInterface::class),
             $this->mockConnectionWithStatement(),
-            $this->createMock(IndexerInterface::class)
+            $this->mockPageRegistry(),
+            $this->mockRouter(),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) [
-                    'type' => 'root',
-                    'dns' => '',
-                    'urlPrefix' => 'en',
-                ],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn([
+                'type' => 'root',
+                'dns' => '',
+                'urlPrefix' => 'en',
+            ])
+        ;
 
         $listener->validateUrlPrefix('de/ch', $dc);
     }
 
     public function testReturnsValueWhenValidatingUrlSuffix(): void
     {
-        $framework = $this->mockFrameworkWithPages(
-            [
-                'dns' => '',
-                'urlPrefix' => 'de',
-                'urlSuffix' => '.html',
-            ],
+        $inputData = [
+            'dns' => '',
+            'urlPrefix' => 'de',
+            'urlSuffix' => '.html',
+        ];
+
+        $pageModels = $this->getPageModels([
             [
                 'id' => 1,
                 'pid' => 0,
@@ -1368,6 +1432,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'root',
                 'urlPrefix' => '',
                 'urlSuffix' => '',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 2,
@@ -1375,44 +1440,54 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'foo',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
-            ]
-        );
+                'rootLanguage' => '',
+            ],
+        ]);
 
-        $connection = $this->mockConnection(
-            [['urlPrefix' => 'de', 'urlSuffix' => '.html']],
-            [2],
-            ['foo'],
-            [[]]
-        );
+        $pageAdapter = $this->mockAdapter(['findWithDetails', 'findByPid', 'findSimilarByAlias']);
+        $pageAdapter
+            ->method('findWithDetails')
+            ->willReturnCallback(static fn (int $id) => $pageModels['id'][$id] ?? null)
+        ;
+
+        $pageAdapter
+            ->method('findByPid')
+            ->willReturnCallback(static fn (int $pid) => $pageModels['pid'][$pid] ?? null)
+        ;
+
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter($inputData),
+        ]);
 
         $listener = new PageUrlListener(
             $framework,
             $this->createMock(Slug::class),
             $this->mockTranslator(),
-            $connection,
-            $this->createMock(IndexerInterface::class)
+            $this->mockConnection(),
+            new PageRegistry($this->createMock(Connection::class)),
+            $this->mockRouter(1),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) ['type' => 'root', 'urlPrefix' => 'de', 'urlSuffix' => ''],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn(['type' => 'root', 'urlPrefix' => 'de', 'urlSuffix' => ''])
+        ;
 
-        $listener->validateUrlSuffix('.html', $dc);
+        $this->assertSame('.html', $listener->validateUrlSuffix('.html', $dc));
     }
 
     public function testThrowsExceptionOnDuplicateUrlSuffix(): void
     {
-        $framework = $this->mockFrameworkWithPages(
-            [
-                'dns' => '',
-                'urlPrefix' => 'de',
-                'urlSuffix' => '.html',
-            ],
+        $inputData = [
+            'dns' => '',
+            'urlPrefix' => 'de',
+            'urlSuffix' => '.html',
+        ];
+
+        $pageModels = $this->getPageModels([
             [
                 'id' => 1,
                 'pid' => 0,
@@ -1427,6 +1502,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'foo',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 3,
@@ -1434,6 +1510,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'bar',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 4,
@@ -1441,6 +1518,7 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'bar/foo',
                 'urlPrefix' => '',
                 'urlSuffix' => '.html',
+                'rootLanguage' => '',
             ],
             [
                 'id' => 5,
@@ -1448,6 +1526,7 @@ class PageUrlListenerTest extends TestCase
                 'type' => 'root',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
+                'rootLanguage' => 'de',
             ],
             [
                 'id' => 6,
@@ -1455,44 +1534,57 @@ class PageUrlListenerTest extends TestCase
                 'alias' => 'bar/foo',
                 'urlPrefix' => 'de',
                 'urlSuffix' => '.html',
-            ]
-        );
+            ],
+        ]);
 
-        $translator = $this->mockTranslator('ERR.pageUrlSuffix', '/de/bar/foo.html');
+        $pageAdapter = $this->mockAdapter(['findWithDetails', 'findByPid', 'findSimilarByAlias']);
+        $pageAdapter
+            ->method('findWithDetails')
+            ->willReturnCallback(static fn (int $id) => $pageModels['id'][$id] ?? null)
+        ;
 
-        $connection = $this->mockConnection(
-            [['urlPrefix' => 'de', 'urlSuffix' => '.html']],
-            [2, 3, 4],
-            ['foo', 'bar', 'bar/foo'],
-            [[], [], [6]]
-        );
+        $pageAdapter
+            ->method('findByPid')
+            ->willReturnCallback(static fn (int $pid) => $pageModels['pid'][$pid] ?? null)
+        ;
+
+        $pageAdapter
+            ->method('findSimilarByAlias')
+            ->willReturn(null, null, [$pageModels['id'][4]])
+        ;
+
+        $framework = $this->mockContaoFramework([
+            PageModel::class => $pageAdapter,
+            Input::class => $this->mockInputAdapter($inputData),
+        ]);
+
+        $translator = $this->mockTranslator('ERR.pageUrlSuffix', ['/de/bar/foo.html']);
 
         $listener = new PageUrlListener(
             $framework,
             $this->createMock(Slug::class),
             $translator,
-            $connection,
-            $this->createMock(IndexerInterface::class)
+            $this->mockConnection(),
+            new PageRegistry($this->createMock(Connection::class)),
+            $this->mockRouter(3),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) ['type' => 'root', 'urlPrefix' => 'de', 'urlSuffix' => ''],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn(['type' => 'root', 'urlPrefix' => 'de', 'urlSuffix' => ''])
+        ;
 
         $listener->validateUrlSuffix('.html', $dc);
     }
 
     public function testDoesNotValidateTheUrlSuffixIfPageTypeIsNotRoot(): void
     {
-        $pageAdapter = $this->mockAdapter(['findByPk']);
+        $pageAdapter = $this->mockAdapter(['findById']);
         $pageAdapter
             ->expects($this->never())
-            ->method('findByPk')
+            ->method('findById')
         ;
 
         $framework = $this->mockContaoFramework([PageModel::class => $pageAdapter]);
@@ -1501,31 +1593,30 @@ class PageUrlListenerTest extends TestCase
             $framework,
             $this->createMock(Slug::class),
             $this->createMock(TranslatorInterface::class),
-            $this->mockConnectionWithStatement(),
-            $this->createMock(IndexerInterface::class)
+            $this->createMock(Connection::class),
+            $this->mockPageRegistry(),
+            $this->mockRouter(),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) [
-                    'type' => 'regular',
-                    'urlSuffix' => '/',
-                ],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn([
+                'type' => 'regular',
+                'urlSuffix' => '/',
+            ])
+        ;
 
         $listener->validateUrlPrefix('.html', $dc);
     }
 
     public function testDoesNotValidateTheUrlSuffixIfTheValueHasNotChanged(): void
     {
-        $pageAdapter = $this->mockAdapter(['findByPk']);
+        $pageAdapter = $this->mockAdapter(['findById']);
         $pageAdapter
             ->expects($this->never())
-            ->method('findByPk')
+            ->method('findById')
         ;
 
         $framework = $this->mockContaoFramework([PageModel::class => $pageAdapter]);
@@ -1534,31 +1625,30 @@ class PageUrlListenerTest extends TestCase
             $framework,
             $this->createMock(Slug::class),
             $this->createMock(TranslatorInterface::class),
-            $this->mockConnectionWithStatement(),
-            $this->createMock(IndexerInterface::class)
+            $this->createMock(Connection::class),
+            $this->mockPageRegistry(),
+            $this->mockRouter(),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) [
-                    'type' => 'root',
-                    'urlPrefix' => '.html',
-                ],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn([
+                'type' => 'root',
+                'urlPrefix' => '.html',
+            ])
+        ;
 
         $listener->validateUrlPrefix('.html', $dc);
     }
 
     public function testDoesNotValidateTheUrlSuffixIfTheRootPageIsNotFound(): void
     {
-        $pageAdapter = $this->mockAdapter(['findByPk']);
+        $pageAdapter = $this->mockAdapter(['findWithDetails']);
         $pageAdapter
             ->expects($this->once())
-            ->method('findByPk')
+            ->method('findWithDetails')
             ->with(1)
             ->willReturn(null)
         ;
@@ -1569,164 +1659,90 @@ class PageUrlListenerTest extends TestCase
             $framework,
             $this->createMock(Slug::class),
             $this->createMock(TranslatorInterface::class),
-            $this->mockConnectionWithStatement(),
-            $this->createMock(IndexerInterface::class)
+            $this->createMock(Connection::class),
+            $this->mockPageRegistry(),
+            $this->mockRouter(),
+            new UrlMatcher(),
         );
 
-        /** @var MockObject&DataContainer $dc */
-        $dc = $this->mockClassWithProperties(
-            DataContainer::class,
-            [
-                'id' => 1,
-                'activeRecord' => (object) [
-                    'type' => 'root',
-                    'dns' => '',
-                    'urlPrefix' => '',
-                ],
-            ]
-        );
+        $dc = $this->mockClassWithProperties(DataContainer::class, ['id' => 1]);
+        $dc
+            ->method('getCurrentRecord')
+            ->willReturn([
+                'type' => 'root',
+                'dns' => '',
+                'urlPrefix' => '',
+            ])
+        ;
 
         $listener->validateUrlPrefix('.html', $dc);
     }
 
     /**
-     * @return Connection&MockObject
+     * @return array{id: array<PageModel&MockObject>, pid: array<int, array<PageModel&MockObject>>}
      */
-    private function mockConnection(array $prefixAndSuffix, array $ids, array $aliases, array $aliasIds, bool $prefixCheck = false): Connection
+    private function getPageModels(array $pages): array
     {
-        $args = [];
-        $statements = [];
+        $return = ['id' => [], 'pid' => []];
+
+        foreach ($pages as $row) {
+            $page = $this->mockClassWithProperties(PageModel::class, $row);
+
+            $return['id'][$row['id']] = $page;
+
+            if (isset($row['pid'])) {
+                $return['pid'][$row['pid']][] = $page;
+            }
+        }
+
+        return $return;
+    }
+
+    private function mockConnection(bool $prefixCheck = false): Connection&MockObject
+    {
+        $connection = $this->createMock(Connection::class);
 
         if ($prefixCheck) {
-            $args[] = ["SELECT COUNT(*) FROM tl_page WHERE urlPrefix=:urlPrefix AND dns=:dns AND id!=:rootId AND type='root'"];
-
-            $statement = $this->createMock(Statement::class);
-            $statement
+            $connection
                 ->expects($this->once())
-                ->method('fetchColumn')
+                ->method('fetchOne')
+                ->with(
+                    <<<'SQL'
+                        SELECT COUNT(*)
+                        FROM tl_page
+                        WHERE
+                            urlPrefix = :urlPrefix
+                            AND dns = :dns
+                            AND id != :rootId
+                            AND type = 'root'
+                        SQL,
+                )
                 ->willReturn(0)
             ;
-
-            $statements[] = $statement;
         }
-
-        $args[] = ["SELECT urlPrefix, urlSuffix FROM tl_page WHERE type='root'"];
-
-        $statement = $this->createMock(Statement::class);
-        $statement
-            ->expects($this->once())
-            ->method('fetchAll')
-            ->willReturn($prefixAndSuffix)
-        ;
-
-        $statements[] = $statement;
-
-        foreach ($ids as $k => $id) {
-            if (!isset($aliases[$k])) {
-                continue;
-            }
-
-            $args[] = [
-                'SELECT id FROM tl_page WHERE alias LIKE :alias AND id!=:id',
-                [
-                    'alias' => '%'.$aliases[$k].'%',
-                    'id' => $id,
-                ],
-            ];
-
-            $statement = $this->createMock(Statement::class);
-            $statement
-                ->expects($this->once())
-                ->method('fetchAll')
-                ->with(FetchMode::COLUMN)
-                ->willReturn($aliasIds[$k])
-            ;
-
-            $statements[] = $statement;
-        }
-
-        $connection = $this->createMock(Connection::class);
-        $connection
-            ->expects($this->exactly(\count($statements)))
-            ->method('executeQuery')
-            ->withConsecutive(...$args)
-            ->willReturnOnConsecutiveCalls(...$statements)
-        ;
 
         return $connection;
     }
 
     /**
-     * @return ContaoFramework&MockObject
+     * @return Adapter<Input>&MockObject
      */
-    private function mockFrameworkWithPages(array $inputData, array ...$data): ContaoFramework
+    private function mockInputAdapter(array $inputData): Adapter&MockObject
     {
-        $pagesById = [];
-        $pagesByPid = [];
-
-        foreach ($data as $row) {
-            $page = $this->mockClassWithProperties(PageModel::class, $row);
-            $pagesById[$row['id']] = $page;
-
-            if (isset($row['pid'])) {
-                $pagesByPid[$row['pid']][] = $page;
-            }
-        }
-
-        $pageAdapter = $this->mockAdapter(['findByPk', 'findWithDetails', 'findByPid']);
-        $pageAdapter
-            ->method('findByPk')
-            ->willReturnCallback(
-                static function (int $id) use ($pagesById) {
-                    return $pagesById[$id] ?? null;
-                }
-            )
-        ;
-
-        $pageAdapter
-            ->method('findWithDetails')
-            ->willReturnCallback(
-                static function (int $id) use ($pagesById) {
-                    return $pagesById[$id] ?? null;
-                }
-            )
-        ;
-
-        $pageAdapter
-            ->method('findByPid')
-            ->willReturnCallback(
-                static function (int $pid) use ($pagesByPid) {
-                    return $pagesByPid[$pid] ?? null;
-                }
-            )
-        ;
-
         $inputAdapter = $this->mockAdapter(['post']);
         $inputAdapter
             ->method('post')
-            ->willReturnCallback(
-                static function ($key) use ($inputData) {
-                    return $inputData[$key] ?? null;
-                }
-            )
+            ->willReturnCallback(static fn ($key) => $inputData[$key] ?? null)
         ;
 
-        return $this->mockContaoFramework(
-            [
-                PageModel::class => $pageAdapter,
-                Input::class => $inputAdapter,
-            ]
-        );
+        return $inputAdapter;
     }
 
-    /**
-     * @return TranslatorInterface&MockObject
-     */
-    private function mockTranslator(string $messageKey = null, string $argument = null): TranslatorInterface
+    private function mockTranslator(string|null $messageKey = null, array $arguments = []): TranslatorInterface&MockObject
     {
         $translator = $this->createMock(TranslatorInterface::class);
 
-        if (null === $messageKey || null === $argument) {
+        if (null === $messageKey) {
             $translator
                 ->expects($this->never())
                 ->method('trans')
@@ -1738,33 +1754,104 @@ class PageUrlListenerTest extends TestCase
         $translator
             ->expects($this->once())
             ->method('trans')
-            ->with($messageKey, [$argument], 'contao_default')
-            ->willReturn($argument)
+            ->with($messageKey, $arguments, 'contao_default')
+            ->willReturn($messageKey)
         ;
 
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage($argument);
+        $this->expectExceptionMessage($messageKey);
 
         return $translator;
     }
 
-    /**
-     * @return Connection&MockObject
-     */
-    private function mockConnectionWithStatement(): Connection
+    private function mockConnectionWithStatement(): Connection&MockObject
     {
-        $statement = $this->createMock(Statement::class);
-        $statement
-            ->method('fetchAll')
-            ->willReturn([])
-        ;
-
         $connection = $this->createMock(Connection::class);
         $connection
-            ->method('executeQuery')
-            ->willReturn($statement)
+            ->method('fetchOne')
+            ->willReturn(0)
         ;
 
         return $connection;
+    }
+
+    private function mockPageRegistry(array $isRoutable = [true], array $routes = []): PageRegistry&MockObject
+    {
+        $pageRegistry = $this->createMock(PageRegistry::class);
+        $pageRegistry
+            ->method('isRoutable')
+            ->willReturn(...$isRoutable)
+        ;
+
+        $pageRegistry
+            ->method('getRoute')
+            ->willReturnOnConsecutiveCalls(...$routes)
+        ;
+
+        return $pageRegistry;
+    }
+
+    private function mockRouter(PageRoute|int|false|null $route = null): RouterInterface&MockObject
+    {
+        $router = $this->createMock(RouterInterface::class);
+
+        if (null === $route) {
+            $router
+                ->expects($this->never())
+                ->method('generate')
+            ;
+        } elseif (false === $route) {
+            $router
+                ->expects($this->atLeastOnce())
+                ->method('generate')
+                ->willThrowException($this->createMock(RouteParametersException::class))
+            ;
+        } elseif ($route instanceof PageRoute) {
+            $path = '/'.$route->getPageModel()->alias;
+
+            if ('' !== $route->getUrlPrefix()) {
+                $path = '/'.$route->getUrlPrefix().$path;
+            }
+
+            $path .= $route->getUrlSuffix();
+
+            $router
+                ->expects($this->atLeastOnce())
+                ->method('generate')
+                ->with(
+                    PageRoute::PAGE_BASED_ROUTE_NAME,
+                    [RouteObjectInterface::ROUTE_OBJECT => $route],
+                    UrlGeneratorInterface::ABSOLUTE_URL,
+                )
+                ->willReturn($path)
+            ;
+        } else {
+            $router
+                ->expects($this->exactly($route))
+                ->method('generate')
+                ->with(
+                    PageRoute::PAGE_BASED_ROUTE_NAME,
+                    new IsType('array'),
+                    UrlGeneratorInterface::ABSOLUTE_URL,
+                )
+                ->willReturnCallback(
+                    function (string $routeName, array $params) {
+                        $this->assertArrayHasKey(RouteObjectInterface::ROUTE_OBJECT, $params);
+                        $this->assertInstanceOf(PageRoute::class, $params[RouteObjectInterface::ROUTE_OBJECT]);
+
+                        $route = $params[RouteObjectInterface::ROUTE_OBJECT];
+                        $path = '/'.$route->getPageModel()->alias;
+
+                        if ('' !== $route->getUrlPrefix()) {
+                            $path = '/'.$route->getUrlPrefix().$path;
+                        }
+
+                        return $path.$route->getUrlSuffix();
+                    },
+                )
+            ;
+        }
+
+        return $router;
     }
 }

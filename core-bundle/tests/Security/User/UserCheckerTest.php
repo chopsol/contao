@@ -14,11 +14,9 @@ namespace Contao\CoreBundle\Tests\Security\User;
 
 use Contao\BackendUser;
 use Contao\Config;
-use Contao\CoreBundle\Security\Exception\LockedException;
 use Contao\CoreBundle\Security\User\UserChecker;
 use Contao\CoreBundle\Tests\TestCase;
 use Contao\FrontendUser;
-use PHPUnit\Framework\MockObject\MockObject;
 use Symfony\Component\Security\Core\Exception\DisabledException;
 use Symfony\Component\Security\Core\User\UserInterface;
 
@@ -31,9 +29,8 @@ class UserCheckerTest extends TestCase
 
         $user = $this->createMock(BackendUser::class);
         $user->username = 'foo';
-        $user->locked = 0;
-        $user->disable = '';
-        $user->login = '1';
+        $user->disable = false;
+        $user->login = true;
         $user->start = '';
         $user->stop = '';
 
@@ -41,7 +38,7 @@ class UserCheckerTest extends TestCase
         $userChecker->checkPreAuth($user);
         $userChecker->checkPostAuth($user);
 
-        $this->addToAssertionCount(1);  // does not throw an exception
+        $this->addToAssertionCount(1); // does not throw an exception
     }
 
     public function testDoesNothingIfTheUserIsNotAContaoUser(): void
@@ -56,28 +53,11 @@ class UserCheckerTest extends TestCase
         $userChecker->checkPreAuth($this->createMock(UserInterface::class));
     }
 
-    public function testThrowsAnExceptionIfTheAccountIsLocked(): void
-    {
-        /** @var BackendUser&MockObject $user */
-        $user = $this->mockClassWithProperties(BackendUser::class);
-        $user->username = 'foo';
-        $user->locked = time() + 5;
-
-        $userChecker = new UserChecker($this->mockContaoFramework());
-
-        $this->expectException(LockedException::class);
-        $this->expectExceptionMessage('User "foo" is still locked for 5 seconds');
-
-        $userChecker->checkPreAuth($user);
-    }
-
     public function testThrowsAnExceptionIfTheAccountIsDisabled(): void
     {
-        /** @var BackendUser&MockObject $user */
         $user = $this->mockClassWithProperties(BackendUser::class);
         $user->username = 'foo';
-        $user->locked = 0;
-        $user->disable = '1';
+        $user->disable = true;
 
         $userChecker = new UserChecker($this->mockContaoFramework());
 
@@ -89,12 +69,10 @@ class UserCheckerTest extends TestCase
 
     public function testThrowsAnExceptionIfTheUserIsNotAllowedToLogin(): void
     {
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->username = 'foo';
-        $user->locked = 0;
-        $user->disable = '';
-        $user->login = '';
+        $user->disable = false;
+        $user->login = false;
 
         $userChecker = new UserChecker($this->mockContaoFramework());
 
@@ -108,16 +86,14 @@ class UserCheckerTest extends TestCase
     {
         $time = strtotime('tomorrow');
 
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->username = 'foo';
-        $user->locked = 0;
-        $user->disable = '';
-        $user->login = '1';
+        $user->disable = false;
+        $user->login = true;
         $user->start = (string) $time;
 
         $userChecker = new UserChecker($this->mockContaoFramework());
-        $message = sprintf('The account is not active yet (activation date: %s)', date('Y-m-d', $time));
+        $message = \sprintf('The account is not active yet (activation date: %s)', date('Y-m-d', $time));
 
         $this->expectException(DisabledException::class);
         $this->expectExceptionMessage($message);
@@ -129,17 +105,15 @@ class UserCheckerTest extends TestCase
     {
         $time = strtotime('yesterday');
 
-        /** @var FrontendUser&MockObject $user */
         $user = $this->mockClassWithProperties(FrontendUser::class);
         $user->username = 'foo';
-        $user->locked = 0;
-        $user->disable = '';
-        $user->login = '1';
+        $user->disable = false;
+        $user->login = true;
         $user->start = '';
         $user->stop = (string) $time;
 
         $userChecker = new UserChecker($this->mockContaoFramework());
-        $message = sprintf('The account is not active anymore (deactivation date: %s)', date('Y-m-d', $time));
+        $message = \sprintf('The account is not active anymore (deactivation date: %s)', date('Y-m-d', $time));
 
         $this->expectException(DisabledException::class);
         $this->expectExceptionMessage($message);

@@ -14,9 +14,10 @@ namespace Contao\CoreBundle\DependencyInjection\Compiler;
 
 use Contao\CoreBundle\Routing\Page\ContentCompositionInterface;
 use Contao\CoreBundle\Routing\Page\DynamicRouteInterface;
-use Contao\CoreBundle\Routing\Page\PageRegistry;
 use Contao\CoreBundle\Routing\Page\RouteConfig;
 use Contao\FrontendIndex;
+use Psr\Container\ContainerInterface;
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\Compiler\PriorityTaggedServiceTrait;
 use Symfony\Component\DependencyInjection\Container;
@@ -39,7 +40,7 @@ class RegisterPagesPass implements CompilerPassInterface
      */
     public function process(ContainerBuilder $container): void
     {
-        if (!$container->has(PageRegistry::class)) {
+        if (!$container->has('contao.routing.page_registry')) {
             return;
         }
 
@@ -48,13 +49,18 @@ class RegisterPagesPass implements CompilerPassInterface
 
     protected function registerPages(ContainerBuilder $container): void
     {
-        $registry = $container->findDefinition(PageRegistry::class);
+        $registry = $container->findDefinition('contao.routing.page_registry');
+        $command = $container->hasDefinition('contao.command.debug_pages') ? $container->findDefinition('contao.command.debug_pages') : null;
 
         foreach ($this->findAndSortTaggedServices(self::TAG_NAME, $container) as $reference) {
             $definition = $container->findDefinition((string) $reference);
             $tags = $definition->getTag(self::TAG_NAME);
 
             $definition->clearTag(self::TAG_NAME);
+
+            if (!$definition->hasMethodCall('setContainer') && is_a($definition->getClass(), AbstractController::class, true)) {
+                $definition->addMethodCall('setContainer', [new Reference(ContainerInterface::class)]);
+            }
 
             foreach ($tags as $attributes) {
                 $routeEnhancer = null;
@@ -72,8 +78,7 @@ class RegisterPagesPass implements CompilerPassInterface
 
                 $config = $this->getRouteConfig($reference, $definition, $attributes);
                 $registry->addMethodCall('add', [$type, $config, $routeEnhancer, $contentComposition]);
-
-                $definition->addTag(self::TAG_NAME, $attributes);
+                $command?->addMethodCall('add', [$type, $config, $routeEnhancer, $contentComposition]);
             }
         }
     }
@@ -86,23 +91,20 @@ class RegisterPagesPass implements CompilerPassInterface
         $path = $attributes['path'] ?? null;
         $pathRegex = null;
 
-        if (null !== $path && 0 === strncmp($path, '/', 1)) {
-            $compiledRoute = (new Route($path))->compile();
+        if (\is_string($path) && str_starts_with($path, '/')) {
+            $compiledRoute = (new Route($path, $defaults, $attributes['requirements'] ?? [], $attributes['options'] ?? []))->compile();
             $pathRegex = $compiledRoute->getRegex();
         }
 
-        return new Definition(
-            RouteConfig::class,
-            [
-                $path,
-                $pathRegex,
-                $attributes['urlSuffix'] ?? null,
-                $attributes['requirements'] ?? [],
-                $attributes['options'] ?? [],
-                $defaults,
-                $attributes['methods'] ?? [],
-            ]
-        );
+        return new Definition(RouteConfig::class, [
+            $path,
+            $pathRegex,
+            $attributes['urlSuffix'] ?? null,
+            $attributes['requirements'] ?? [],
+            $attributes['options'] ?? [],
+            $defaults,
+            $attributes['methods'] ?? [],
+        ]);
     }
 
     /**
@@ -140,11 +142,11 @@ class RegisterPagesPass implements CompilerPassInterface
 
         $className = ltrim(strrchr($className, '\\'), '\\');
 
-        if ('Controller' === substr($className, -10)) {
+        if (str_ends_with($className, 'Controller')) {
             $className = substr($className, 0, -10);
         }
 
-        if ('Page' === substr($className, -4)) {
+        if (str_ends_with($className, 'Page')) {
             $className = substr($className, 0, -4);
         }
 

@@ -17,52 +17,41 @@ use Contao\CoreBundle\Exception\InvalidRequestTokenException;
 use Contao\CoreBundle\Exception\ResponseException;
 use Contao\CoreBundle\Exception\RouteParametersException;
 use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\PageError404;
+use Contao\CoreBundle\Routing\Page\PageRegistry;
+use Contao\CoreBundle\Routing\PageFinder;
+use Contao\CoreBundle\Util\LocaleUtil;
 use Contao\StringUtil;
+use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\AcceptHeader;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Event\ExceptionEvent;
-use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
-use Symfony\Component\HttpKernel\Exception\UnauthorizedHttpException;
+use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\Security\Core\Exception\AuthenticationCredentialsNotFoundException;
-use Symfony\Component\Security\Core\Security;
 use Twig\Environment;
 use Twig\Error\Error;
 
 /**
+ * The priority must be higher than the one of the Twig exception listener
+ * (defaults to -128).
+ *
  * @internal
  */
+#[AsEventListener(priority: -96)]
 class PrettyErrorScreenListener
 {
-    /**
-     * @var bool
-     */
-    private $prettyErrorScreens;
-
-    /**
-     * @var Environment
-     */
-    private $twig;
-
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    /**
-     * @var Security
-     */
-    private $security;
-
-    public function __construct(bool $prettyErrorScreens, Environment $twig, ContaoFramework $framework, Security $security)
-    {
-        $this->prettyErrorScreens = $prettyErrorScreens;
-        $this->twig = $twig;
-        $this->framework = $framework;
-        $this->security = $security;
+    public function __construct(
+        private readonly bool $prettyErrorScreens,
+        private readonly Environment $twig,
+        private readonly ContaoFramework $framework,
+        private readonly Security $security,
+        private readonly PageRegistry $pageRegistry,
+        private readonly HttpKernelInterface $httpKernel,
+        private readonly PageFinder $pageFinder,
+    ) {
     }
 
     /**
@@ -70,7 +59,7 @@ class PrettyErrorScreenListener
      */
     public function __invoke(ExceptionEvent $event): void
     {
-        if (!$event->isMasterRequest()) {
+        if (!$event->isMainRequest()) {
             return;
         }
 
@@ -93,7 +82,7 @@ class PrettyErrorScreenListener
 
         try {
             $isBackendUser = $this->security->isGranted('ROLE_USER');
-        } catch (AuthenticationCredentialsNotFoundException $e) {
+        } catch (AuthenticationCredentialsNotFoundException) {
             $isBackendUser = false;
         }
 
@@ -102,20 +91,16 @@ class PrettyErrorScreenListener
                 $this->renderBackendException($event);
                 break;
 
-            case $exception instanceof UnauthorizedHttpException:
-                $this->renderErrorScreenByType(401, $event);
-                break;
-
-            case $exception instanceof AccessDeniedHttpException:
-                $this->renderErrorScreenByType(403, $event);
-                break;
-
             case $exception instanceof NotFoundHttpException:
                 $this->renderErrorScreenByType(404, $event);
                 break;
 
             case $exception instanceof ServiceUnavailableHttpException:
-                $this->renderTemplate('service_unavailable', 503, $event);
+                $this->renderErrorScreenByType(503, $event);
+
+                if (!$event->hasResponse()) {
+                    $this->renderTemplate('service_unavailable', 503, $event);
+                }
                 break;
 
             default:
@@ -146,32 +131,29 @@ class PrettyErrorScreenListener
 
         $processing = true;
 
-        if (null !== ($response = $this->getResponseFromPageHandler($type))) {
-            $event->setResponse($response);
-        }
-
-        $processing = false;
-    }
-
-    private function getResponseFromPageHandler(int $type): ?Response
-    {
-        $this->framework->initialize(true);
-
-        $key = 'error_'.$type;
-
-        if (!isset($GLOBALS['TL_PTY'][$key]) || !class_exists($GLOBALS['TL_PTY'][$key])) {
-            return null;
-        }
-
-        /** @var PageError404 $pageHandler */
-        $pageHandler = new $GLOBALS['TL_PTY'][$key]();
-
         try {
-            return $pageHandler->getResponse();
-        } catch (ResponseException $e) {
-            return $e->getResponse();
-        } catch (\Exception $e) {
-            return null;
+            $this->framework->initialize();
+
+            $request = $event->getRequest();
+            $errorPage = $this->pageFinder->findFirstPageOfTypeForRequest($request, 'error_'.$type);
+
+            if (!$errorPage) {
+                return;
+            }
+
+            $route = $this->pageRegistry->getRoute($errorPage);
+            $subRequest = $request->duplicate(null, null, $route->getDefaults());
+
+            try {
+                $response = $this->httpKernel->handle($subRequest, HttpKernelInterface::SUB_REQUEST, false);
+                $event->setResponse($response);
+            } catch (ResponseException $e) {
+                $event->setResponse($e->getResponse());
+            } catch (\Throwable $e) {
+                $event->setThrowable($e);
+            }
+        } finally {
+            $processing = false;
         }
     }
 
@@ -189,7 +171,7 @@ class PrettyErrorScreenListener
             if ($exception instanceof InvalidRequestTokenException) {
                 $template = 'invalid_request_token';
             }
-        } while (null === $template && null !== ($exception = $exception->getPrevious()));
+        } while (null === $template && ($exception = $exception->getPrevious()));
 
         $this->renderTemplate($template ?: 'error', $statusCode, $event);
     }
@@ -200,28 +182,40 @@ class PrettyErrorScreenListener
             return;
         }
 
+        // Backwards compatibility: check if a bundle template exists
         $view = '@ContaoCore/Error/'.$template.'.html.twig';
         $parameters = $this->getTemplateParameters($view, $statusCode, $event);
 
+        if (!$this->twig->getLoader()->exists($view)) {
+            $view = match ($template) {
+                'backend' => '@Contao/error/backend.html.twig',
+                'invalid_request_token' => '@Contao/error/invalid_request_token.html.twig',
+                'missing_route_parameters' => '@Contao/error/missing_route_parameters.html.twig',
+                'service_unavailable' => '@Contao/error/service_unavailable.html.twig',
+                default => '@Contao/error/general.html.twig',
+            };
+        }
+
         try {
             $event->setResponse(new Response($this->twig->render($view, $parameters), $statusCode));
-        } catch (Error $e) {
-            $event->setResponse(new Response($this->twig->render('@ContaoCore/Error/error.html.twig'), 500));
+        } catch (Error) {
+            $event->setResponse(new Response($this->twig->render('@Contao/error/general.html.twig'), 500));
         }
     }
 
     /**
-     * @return array<string,mixed>
+     * @return array<string, mixed>
      */
     private function getTemplateParameters(string $view, int $statusCode, ExceptionEvent $event): array
     {
-        /** @var Config $config */
+        $this->framework->initialize();
+
         $config = $this->framework->getAdapter(Config::class);
         $encoded = StringUtil::encodeEmail($config->get('adminEmail'));
 
         try {
             $isBackendUser = $this->security->isGranted('ROLE_USER');
-        } catch (AuthenticationCredentialsNotFoundException $e) {
+        } catch (AuthenticationCredentialsNotFoundException) {
             $isBackendUser = false;
         }
 
@@ -230,7 +224,7 @@ class PrettyErrorScreenListener
             'statusName' => Response::$statusTexts[$statusCode],
             'template' => $view,
             'base' => $event->getRequest()->getBasePath(),
-            'language' => $event->getRequest()->getLocale(),
+            'language' => LocaleUtil::formatAsLanguageTag($event->getRequest()->getLocale()),
             'adminEmail' => '&#109;&#97;&#105;&#108;&#116;&#111;&#58;'.$encoded,
             'isBackendUser' => $isBackendUser,
             'exception' => $event->getThrowable()->getMessage(),
@@ -241,7 +235,7 @@ class PrettyErrorScreenListener
     private function getStatusCodeForException(\Throwable $exception): int
     {
         if ($exception instanceof HttpException) {
-            return (int) $exception->getStatusCode();
+            return $exception->getStatusCode();
         }
 
         return 500;

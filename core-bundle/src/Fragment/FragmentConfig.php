@@ -12,31 +12,18 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Fragment;
 
+use Symfony\Component\HttpKernel\Fragment\FragmentHandler;
+
 class FragmentConfig
 {
     /**
-     * @var string
+     * @see FragmentHandler::render()
      */
-    private $controller;
-
-    /**
-     * @var string
-     */
-    private $renderer;
-
-    /**
-     * @var array
-     */
-    private $options;
-
-    /**
-     * @see \Symfony\Component\HttpKernel\Fragment\FragmentHandler::render()
-     */
-    public function __construct(string $controller, string $renderer = 'forward', array $options = [])
-    {
-        $this->controller = $controller;
-        $this->renderer = $renderer;
-        $this->options = $options;
+    public function __construct(
+        private string $controller,
+        private string $renderer = 'forward',
+        private array $options = [],
+    ) {
     }
 
     public function getController(): string
@@ -64,7 +51,7 @@ class FragmentConfig
     }
 
     /**
-     * @return array<string,mixed>
+     * @return array<string, mixed>
      */
     public function getOptions(): array
     {
@@ -78,12 +65,12 @@ class FragmentConfig
         return $this;
     }
 
-    public function getOption(string $name)
+    public function getOption(string $name): mixed
     {
         return $this->options[$name] ?? null;
     }
 
-    public function setOption(string $name, $option): self
+    public function setOption(string $name, mixed $option): self
     {
         $this->options[$name] = $option;
 

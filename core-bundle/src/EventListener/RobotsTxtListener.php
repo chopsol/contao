@@ -14,7 +14,8 @@ namespace Contao\CoreBundle\EventListener;
 
 use Contao\CoreBundle\Event\RobotsTxtEvent;
 use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\PageModel;
+use Symfony\Bundle\WebProfilerBundle\EventListener\WebDebugToolbarListener;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use webignition\RobotsTxt\Directive\Directive;
 use webignition\RobotsTxt\Directive\UserAgentDirective;
 use webignition\RobotsTxt\Inspector\Inspector;
@@ -23,16 +24,14 @@ use webignition\RobotsTxt\Record\Record;
 /**
  * @internal
  */
+#[AsEventListener]
 class RobotsTxtListener
 {
-    /**
-     * @var ContaoFramework
-     */
-    private $contaoFramework;
-
-    public function __construct(ContaoFramework $contaoFramework)
-    {
-        $this->contaoFramework = $contaoFramework;
+    public function __construct(
+        private readonly ContaoFramework $contaoFramework,
+        private readonly WebDebugToolbarListener|null $webDebugToolbarListener = null,
+        private readonly string $routePrefix = '/contao',
+    ) {
     }
 
     public function __invoke(RobotsTxtEvent $event): void
@@ -59,27 +58,23 @@ class RobotsTxtListener
 
         foreach ($records as $record) {
             $directiveList = $record->getDirectiveList();
-            $directiveList->add(new Directive('Disallow', '/contao/'));
-        }
+            $directiveList->add(new Directive('Disallow', $this->routePrefix.'/'));
+            $directiveList->add(new Directive('Disallow', '/_contao/'));
 
-        /** @var PageModel $pageModel */
-        $pageModel = $this->contaoFramework->getAdapter(PageModel::class);
-        $rootPages = $pageModel->findPublishedRootPages(['dns' => $event->getRootPage()->dns]);
-
-        // Generate the sitemaps
-        foreach ($rootPages as $rootPage) {
-            if (!$rootPage->createSitemap) {
-                continue;
+            if ($this->webDebugToolbarListener?->isEnabled()) {
+                $directiveList->add(new Directive('Disallow', '/_profiler/'));
+                $directiveList->add(new Directive('Disallow', '/_wdt/'));
             }
-
-            $sitemap = sprintf(
-                '%s%s/share/%s.xml',
-                $rootPage->useSSL ? 'https://' : 'http://',
-                $rootPage->dns ?: $event->getRequest()->server->get('HTTP_HOST'),
-                $rootPage->sitemapName
-            );
-
-            $event->getFile()->getNonGroupDirectives()->add(new Directive('Sitemap', $sitemap));
         }
+
+        $rootPage = $event->getRootPage();
+
+        $sitemap = \sprintf(
+            '%s%s/sitemap.xml',
+            $rootPage->useSSL ? 'https://' : 'http://',
+            $rootPage->dns ?: $event->getRequest()->server->get('HTTP_HOST'),
+        );
+
+        $event->getFile()->getNonGroupDirectives()->add(new Directive('Sitemap', $sitemap));
     }
 }

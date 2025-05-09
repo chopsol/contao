@@ -22,29 +22,14 @@ use Symfony\Component\Mime\RawMessage;
 
 final class ContaoMailer implements MailerInterface
 {
-    /**
-     * @var MailerInterface
-     */
-    private $mailer;
-
-    /**
-     * @var AvailableTransports
-     */
-    private $transports;
-
-    /**
-     * @var RequestStack
-     */
-    private $requestStack;
-
-    public function __construct(MailerInterface $mailer, AvailableTransports $transports, RequestStack $requestStack)
-    {
-        $this->mailer = $mailer;
-        $this->transports = $transports;
-        $this->requestStack = $requestStack;
+    public function __construct(
+        private readonly MailerInterface $mailer,
+        private readonly AvailableTransports $transports,
+        private readonly RequestStack $requestStack,
+    ) {
     }
 
-    public function send(RawMessage $message, ?Envelope $envelope = null): void
+    public function send(RawMessage $message, Envelope|null $envelope = null): void
     {
         if ($message instanceof Message) {
             $this->setTransport($message);
@@ -66,13 +51,11 @@ final class ContaoMailer implements MailerInterface
             return;
         }
 
-        $request = $this->requestStack->getCurrentRequest();
-
-        if (null === $request) {
+        if (!$request = $this->requestStack->getCurrentRequest()) {
             return;
         }
 
-        $attributes = $this->requestStack->getCurrentRequest()->attributes;
+        $attributes = $request->attributes;
 
         if (!$attributes->has('pageModel')) {
             return;
@@ -84,10 +67,9 @@ final class ContaoMailer implements MailerInterface
             return;
         }
 
-        /** @var PageModel $page */
         $page->loadDetails();
 
-        if (empty($page->mailerTransport) || null === $this->transports->getTransport($page->mailerTransport)) {
+        if (empty($page->mailerTransport) || !$this->transports->getTransport($page->mailerTransport)) {
             return;
         }
 
@@ -104,9 +86,8 @@ final class ContaoMailer implements MailerInterface
         }
 
         $transportName = $message->getHeaders()->get('X-Transport')->getBodyAsString();
-        $transport = $this->transports->getTransport($transportName);
 
-        if (null === $transport) {
+        if (!$transport = $this->transports->getTransport($transportName)) {
             return;
         }
 
@@ -117,5 +98,14 @@ final class ContaoMailer implements MailerInterface
         }
 
         $message->from($from);
+
+        // Also override "Return-Path" and "Sender" if set (see #4712)
+        if ($message->getReturnPath()) {
+            $message->returnPath($from);
+        }
+
+        if ($message->getSender()) {
+            $message->sender($from);
+        }
     }
 }

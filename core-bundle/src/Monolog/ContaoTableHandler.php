@@ -13,146 +13,68 @@ declare(strict_types=1);
 namespace Contao\CoreBundle\Monolog;
 
 use Contao\StringUtil;
-use Contao\System;
 use Doctrine\DBAL\Connection;
-use Doctrine\DBAL\Driver\Statement;
+use Monolog\Formatter\FormatterInterface;
 use Monolog\Formatter\LineFormatter;
 use Monolog\Handler\AbstractProcessingHandler;
-use Symfony\Component\DependencyInjection\ContainerAwareInterface;
-use Symfony\Component\DependencyInjection\ContainerAwareTrait;
+use Monolog\Level;
+use Monolog\LogRecord;
 
-class ContaoTableHandler extends AbstractProcessingHandler implements ContainerAwareInterface
+class ContaoTableHandler extends AbstractProcessingHandler
 {
-    use ContainerAwareTrait;
-
     /**
-     * @var string
+     * @param \Closure(): Connection $connection
      */
-    private $dbalServiceName = 'doctrine.dbal.default_connection';
-
-    /**
-     * @var Statement
-     */
-    private $statement;
-
-    public function getDbalServiceName(): string
-    {
-        return $this->dbalServiceName;
+    public function __construct(
+        private readonly \Closure $connection,
+        $level = Level::Debug,
+        bool $bubble = true,
+    ) {
+        parent::__construct($level, $bubble);
     }
 
-    public function setDbalServiceName(string $name): void
-    {
-        $this->dbalServiceName = $name;
-    }
-
-    public function handle(array $record): bool
+    public function handle(LogRecord $record): bool
     {
         if (!$this->isHandling($record)) {
             return false;
         }
 
         $record = $this->processRecord($record);
-        $record['formatted'] = $this->getFormatter()->format($record);
+        $record->formatted = $this->getFormatter()->format($record);
 
-        if (!isset($record['extra']['contao']) || !$record['extra']['contao'] instanceof ContaoContext) {
+        if (!isset($record->extra['contao']) || !$record->extra['contao'] instanceof ContaoContext) {
             return false;
         }
 
         try {
             $this->write($record);
-        } catch (\Exception $e) {
+        } catch (\Exception) {
             return false;
         }
 
-        $this->executeHook($record['message'], $record['extra']['contao']);
-
-        return false === $this->bubble;
+        return !$this->bubble;
     }
 
-    protected function write(array $record): void
+    protected function write(LogRecord $record): void
     {
-        $this->createStatement();
-
-        /** @var \DateTime $date */
-        $date = $record['datetime'];
-
         /** @var ContaoContext $context */
-        $context = $record['extra']['contao'];
+        $context = $record->extra['contao'];
 
-        $this->statement->execute([
-            'tstamp' => $date->format('U'),
-            'text' => StringUtil::specialchars((string) $record['formatted']),
+        ($this->connection)()->insert('tl_log', [
+            'tstamp' => $record->datetime->format('U'),
+            'text' => StringUtil::specialchars((string) $record->formatted),
             'source' => (string) $context->getSource(),
             'action' => (string) $context->getAction(),
             'username' => (string) $context->getUsername(),
             'func' => $context->getFunc(),
             'browser' => StringUtil::specialchars((string) $context->getBrowser()),
+            'uri' => StringUtil::specialchars($context->getUri() ?? ''),
+            'page' => $context->getPageId() ?? 0,
         ]);
     }
 
-    protected function getDefaultFormatter(): LineFormatter
+    protected function getDefaultFormatter(): FormatterInterface
     {
         return new LineFormatter('%message%');
-    }
-
-    /**
-     * Verifies the database connection and prepares the statement.
-     *
-     * @throws \RuntimeException
-     */
-    private function createStatement(): void
-    {
-        if (null !== $this->statement) {
-            return;
-        }
-
-        if (null === $this->container || !$this->container->has($this->dbalServiceName)) {
-            throw new \RuntimeException('The container has not been injected or the database service is missing');
-        }
-
-        /** @var Connection $connection */
-        $connection = $this->container->get($this->dbalServiceName);
-
-        $this->statement = $connection->prepare('
-            INSERT INTO
-                tl_log
-                    (tstamp, source, action, username, text, func, browser)
-                VALUES
-                    (:tstamp, :source, :action, :username, :text, :func, :browser)
-        ');
-    }
-
-    /**
-     * Executes the legacy hook if the Contao framework is booted.
-     */
-    private function executeHook(string $message, ContaoContext $context): void
-    {
-        if (null === $this->container || !$this->container->has('contao.framework')) {
-            return;
-        }
-
-        $framework = $this->container->get('contao.framework');
-
-        if (!$this->hasAddLogEntryHook() || !$framework->isInitialized()) {
-            return;
-        }
-
-        trigger_deprecation('contao/core-bundle', '4.0', 'Using the "addLogEntry" hook has been deprecated and will no longer work in Contao 5.0.');
-
-        /** @var System $system */
-        $system = $framework->getAdapter(System::class);
-
-        // Must create variables to allow modification-by-reference in hook
-        $func = $context->getFunc();
-        $action = $context->getAction();
-
-        foreach ($GLOBALS['TL_HOOKS']['addLogEntry'] as $callback) {
-            $system->importStatic($callback[0])->{$callback[1]}($message, $func, $action);
-        }
-    }
-
-    private function hasAddLogEntryHook(): bool
-    {
-        return !empty($GLOBALS['TL_HOOKS']['addLogEntry']) && \is_array($GLOBALS['TL_HOOKS']['addLogEntry']);
     }
 }

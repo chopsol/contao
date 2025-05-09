@@ -12,33 +12,31 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Exception;
 
+use Contao\CoreBundle\Routing\Page\PageRoute;
 use Symfony\Component\Routing\Exception\ExceptionInterface;
+use Symfony\Component\Routing\Exception\InvalidParameterException;
 use Symfony\Component\Routing\Route;
 
-class RouteParametersException extends \InvalidArgumentException implements ExceptionInterface
+class RouteParametersException extends InvalidParameterException
 {
-    /**
-     * @var Route
-     */
-    private $route;
+    public function __construct(
+        private readonly Route $route,
+        private readonly array $parameters,
+        private readonly int $referenceType,
+        ExceptionInterface $previous,
+    ) {
+        $message = $previous->getMessage();
 
-    /**
-     * @var array
-     */
-    private $parameters;
+        if ($route instanceof PageRoute) {
+            $pageModel = $route->getPageModel();
+            $message = 'Unable to generate route for page ID '.$pageModel->id.'.';
 
-    /**
-     * @var int
-     */
-    private $referenceType;
+            if ($pageModel->requireItem && empty($parameters['parameters'])) {
+                $message .= ' The page requires an item but none was given.';
+            }
+        }
 
-    public function __construct(Route $route, array $parameters, int $referenceType, ExceptionInterface $previous)
-    {
-        parent::__construct($previous->getMessage(), $previous->getCode(), $previous);
-
-        $this->route = $route;
-        $this->parameters = $parameters;
-        $this->referenceType = $referenceType;
+        parent::__construct($message, $previous->getCode(), $previous);
     }
 
     public function getRoute(): Route

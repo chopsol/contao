@@ -17,19 +17,14 @@ use Contao\CoreBundle\Routing\Enhancer\InputEnhancer;
 use Contao\CoreBundle\Tests\TestCase;
 use Contao\Input;
 use Contao\PageModel;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\MockObject\MockObject;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\Routing\Exception\ResourceNotFoundException;
 
 class InputEnhancerTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        unset($_GET, $GLOBALS['TL_AUTO_ITEM']);
-    }
-
     public function testReturnsTheDefaultsIfThereIsNoPageModel(): void
     {
         $framework = $this->mockContaoFramework();
@@ -38,13 +33,11 @@ class InputEnhancerTest extends TestCase
             ->method('initialize')
         ;
 
-        $enhancer = new InputEnhancer($framework);
+        $enhancer = new InputEnhancer($framework, new RequestStack());
         $enhancer->enhance([], Request::create('/'));
     }
 
-    /**
-     * @dataProvider getLocales
-     */
+    #[DataProvider('getLocales')]
     public function testSetsTheLanguageWithUrlPrefix(string $urlPrefix, string $language): void
     {
         $input = $this->mockAdapter(['setGet']);
@@ -56,15 +49,19 @@ class InputEnhancerTest extends TestCase
 
         $framework = $this->mockContaoFramework([Input::class => $input]);
 
+        $request = Request::create('/');
+        $requestStack = new RequestStack();
+        $requestStack->push($request);
+
         $defaults = [
             'pageModel' => $this->mockPageModel($language, $urlPrefix),
         ];
 
-        $enhancer = new InputEnhancer($framework);
-        $enhancer->enhance($defaults, Request::create('/'));
+        $enhancer = new InputEnhancer($framework, $requestStack);
+        $enhancer->enhance($defaults, $request);
     }
 
-    public function getLocales(): \Generator
+    public static function getLocales(): iterable
     {
         yield ['', 'en'];
         yield ['', 'de'];
@@ -74,49 +71,48 @@ class InputEnhancerTest extends TestCase
         yield ['bar', 'en'];
     }
 
-    /**
-     * @dataProvider getParameters
-     */
-    public function testAddsParameters(string $parameters, bool $useAutoItem, array ...$setters): void
+    #[DataProvider('getParameters')]
+    public function testAddsParameters(string $parameters, array ...$setters): void
     {
-        // Input::setGet must always be called with $blnAddUnused=true
-        array_walk(
-            $setters,
-            static function (array &$set): void {
-                $set[2] = true;
-            }
-        );
+        $matcher = $this->exactly(\count($setters));
 
-        $input = $this->mockAdapter(['setGet']);
+        $input = $this->mockAdapter(['setGet', 'setUnusedRouteParameters']);
         $input
-            ->expects($this->exactly(\count($setters)))
+            ->expects($matcher)
             ->method('setGet')
-            ->withConsecutive(...$setters)
+            ->with($this->callback(
+                static fn (...$parameters) => $setters[$matcher->numberOfInvocations() - 1] === $parameters,
+            ))
         ;
 
-        $adapters = [
-            Input::class => $input,
-            Config::class => $this->mockConfiguredAdapter(['get' => $useAutoItem]),
-        ];
+        $input
+            ->expects($this->once())
+            ->method('setUnusedRouteParameters')
+            ->with(array_map(static fn ($setter) => $setter[0], $setters))
+        ;
 
-        $framework = $this->mockContaoFramework($adapters);
+        $framework = $this->mockContaoFramework([Input::class => $input]);
+
+        $request = Request::create('/');
+        $requestStack = new RequestStack();
+        $requestStack->push($request);
 
         $defaults = [
             'pageModel' => $this->mockPageModel('en', ''),
             'parameters' => $parameters,
         ];
 
-        $enhancer = new InputEnhancer($framework);
-        $enhancer->enhance($defaults, Request::create('/'));
+        $enhancer = new InputEnhancer($framework, $requestStack);
+        $enhancer->enhance($defaults, $request);
     }
 
-    public function getParameters(): \Generator
+    public static function getParameters(): iterable
     {
-        yield ['/foo/bar', false, ['foo', 'bar']];
-        yield ['/foo/bar/bar/baz', false, ['foo', 'bar'], ['bar', 'baz']];
-        yield ['/foo/bar/baz', true, ['auto_item', 'foo'], ['bar', 'baz']];
-        yield ['/f%20o/bar', false, ['f%20o', 'bar']];
-        yield ['/foo/ba%20r', false, ['foo', 'ba%20r']];
+        yield ['/foo/bar', ['foo', 'bar']];
+        yield ['/foo/bar/bar/baz', ['foo', 'bar'], ['bar', 'baz']];
+        yield ['/foo/bar/baz', ['auto_item', 'foo'], ['bar', 'baz']];
+        yield ['/f%20o/bar', ['f%20o', 'bar']];
+        yield ['/foo/ba%20r', ['foo', 'ba%20r']];
     }
 
     public function testThrowsAnExceptionUponDuplicateParameters(): void
@@ -129,17 +125,21 @@ class InputEnhancerTest extends TestCase
 
         $framework = $this->mockContaoFramework([Input::class => $input]);
 
+        $request = Request::create('/');
+        $requestStack = new RequestStack();
+        $requestStack->push($request);
+
         $defaults = [
             'pageModel' => $this->createMock(PageModel::class),
             'parameters' => '/foo/bar/foo/bar',
         ];
 
-        $enhancer = new InputEnhancer($framework);
+        $enhancer = new InputEnhancer($framework, $requestStack);
 
         $this->expectException(ResourceNotFoundException::class);
         $this->expectExceptionMessage('Duplicate parameter "foo" in path');
 
-        $enhancer->enhance($defaults, Request::create('/'));
+        $enhancer->enhance($defaults, $request);
     }
 
     public function testThrowsAnExceptionUponParametersInQuery(): void
@@ -152,71 +152,21 @@ class InputEnhancerTest extends TestCase
 
         $framework = $this->mockContaoFramework([Input::class => $input]);
 
+        $request = Request::create('/?foo=bar');
+        $requestStack = new RequestStack();
+        $requestStack->push($request);
+
         $defaults = [
             'pageModel' => $this->mockPageModel('en', ''),
             'parameters' => '/foo/bar',
         ];
 
-        $enhancer = new InputEnhancer($framework);
+        $enhancer = new InputEnhancer($framework, $requestStack);
 
         $this->expectException(ResourceNotFoundException::class);
         $this->expectExceptionMessage('Duplicate parameter "foo" in path');
 
-        $enhancer->enhance($defaults, Request::create('/?foo=bar'));
-    }
-
-    public function testThrowsAnExceptionIfAnAutoItemKeywordIsPresent(): void
-    {
-        $input = $this->mockAdapter(['setGet']);
-        $input
-            ->expects($this->once())
-            ->method('setGet')
-            ->with('auto_item', 'foo')
-        ;
-
-        $framework = $this->mockContaoFramework([Input::class => $input]);
-
-        $defaults = [
-            'pageModel' => $this->mockPageModel('en', ''),
-            'parameters' => '/foo/bar/bar',
-        ];
-
-        $GLOBALS['TL_AUTO_ITEM'] = ['bar'];
-
-        $enhancer = new InputEnhancer($framework);
-
-        $this->expectException(ResourceNotFoundException::class);
-        $this->expectExceptionMessage('"bar" is an auto_item keyword (duplicate content)');
-
-        $enhancer->enhance($defaults, Request::create('/'));
-    }
-
-    public function testThrowsAnExceptionIfTheNumberOfArgumentsIsInvalid(): void
-    {
-        $input = $this->mockAdapter(['setGet']);
-        $input
-            ->expects($this->never())
-            ->method('setGet')
-        ;
-
-        $adapters = [
-            Input::class => $input,
-            Config::class => $this->mockConfiguredAdapter(['get' => false]),
-        ];
-
-        $framework = $this->mockContaoFramework($adapters);
-
-        $defaults = [
-            'pageModel' => $this->mockPageModel('en', ''),
-            'parameters' => '/foo/bar/baz',
-        ];
-
-        $enhancer = new InputEnhancer($framework);
-
-        $this->expectException(ResourceNotFoundException::class);
-        $this->expectExceptionMessage('Invalid number of arguments');
-
-        $enhancer->enhance($defaults, Request::create('/'));
+        $enhancer->enhance($defaults, $request);
     }
 
     public function testThrowsAnExceptionIfAFragmentKeyIsEmpty(): void
@@ -235,31 +185,28 @@ class InputEnhancerTest extends TestCase
 
         $framework = $this->mockContaoFramework($adapters);
 
+        $request = Request::create('/');
+        $requestStack = new RequestStack();
+        $requestStack->push($request);
+
         $defaults = [
             'pageModel' => $this->mockPageModel('en', ''),
             'parameters' => '/foo/bar//baz',
         ];
 
-        $enhancer = new InputEnhancer($framework);
+        $enhancer = new InputEnhancer($framework, $requestStack);
 
         $this->expectException(ResourceNotFoundException::class);
         $this->expectExceptionMessage('Empty fragment key in path');
 
-        $enhancer->enhance($defaults, Request::create('/'));
+        $enhancer->enhance($defaults, $request);
     }
 
-    /**
-     * @return PageModel&MockObject
-     */
-    private function mockPageModel(string $language, string $urlPrefix): PageModel
+    private function mockPageModel(string $language, string $urlPrefix): PageModel&MockObject
     {
-        /** @var PageModel&MockObject */
-        return $this->mockClassWithProperties(
-            PageModel::class,
-            [
-                'rootLanguage' => $language,
-                'urlPrefix' => $urlPrefix,
-            ]
-        );
+        return $this->mockClassWithProperties(PageModel::class, [
+            'rootLanguage' => $language,
+            'urlPrefix' => $urlPrefix,
+        ]);
     }
 }

@@ -12,16 +12,24 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\DependencyInjection\Compiler;
 
+use Contao\ContentProxy;
+use Contao\CoreBundle\Controller\FrontendModule\TwoFactorController;
 use Contao\CoreBundle\DependencyInjection\Compiler\RegisterFragmentsPass;
+use Contao\CoreBundle\EventListener\GlobalsMapListener;
+use Contao\CoreBundle\Fragment\FragmentCompositor;
 use Contao\CoreBundle\Fragment\FragmentPreHandlerInterface;
 use Contao\CoreBundle\Fragment\FragmentRegistry;
 use Contao\CoreBundle\Fragment\Reference\ContentElementReference;
 use Contao\CoreBundle\Fragment\Reference\FrontendModuleReference;
 use Contao\CoreBundle\Tests\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Psr\Container\ContainerInterface;
+use Symfony\Component\Config\Definition\Exception\InvalidConfigurationException;
 use Symfony\Component\DependencyInjection\ChildDefinition;
 use Symfony\Component\DependencyInjection\Compiler\ResolveClassPass;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
+use Symfony\Component\DependencyInjection\Reference;
 use Symfony\Component\DependencyInjection\ServiceLocator;
 
 class RegisterFragmentsPassTest extends TestCase
@@ -54,12 +62,11 @@ class RegisterFragmentsPassTest extends TestCase
          */
         $this->assertSame('add', $element[0]);
         $this->assertSame('contao.content_element.text', $element[1][0]);
-        $this->assertRegExp('/^contao.fragment._config_/', (string) $element[1][1]);
+        $this->assertMatchesRegularExpression('/^contao.fragment._config_/', (string) $element[1][1]);
 
         $arguments = $container->getDefinition((string) $element[1][1])->getArguments();
         $this->assertSame('forward', $arguments[1]);
 
-        /** @var ChildDefinition $definition */
         $definition = $container->getDefinition($arguments[0]);
         $this->assertInstanceOf(ChildDefinition::class, $definition);
         $this->assertSame('app.fragments.content_controller', $definition->getParent());
@@ -69,12 +76,11 @@ class RegisterFragmentsPassTest extends TestCase
          */
         $this->assertSame('add', $module[0]);
         $this->assertSame('contao.frontend_module.login', $module[1][0]);
-        $this->assertRegExp('/^contao.fragment._config_/', (string) $module[1][1]);
+        $this->assertMatchesRegularExpression('/^contao.fragment._config_/', (string) $module[1][1]);
 
         $arguments = $container->getDefinition((string) $module[1][1])->getArguments();
         $this->assertSame('esi', $arguments[1]);
 
-        /** @var ChildDefinition $definition */
         $definition = $container->getDefinition($arguments[0]);
         $this->assertInstanceOf(ChildDefinition::class, $definition);
         $this->assertSame('app.fragments.module_controller', $definition->getParent());
@@ -110,6 +116,28 @@ class RegisterFragmentsPassTest extends TestCase
         $this->assertSame('esi', $arguments[1]);
     }
 
+    public function testDoesNotRedefineExistingServices(): void
+    {
+        $contentController = new Definition('App\Fragments\Text');
+        $contentController->addTag('contao.content_element', ['type' => 'text']);
+
+        $duplicateContentController = new Definition('App\Fragments\EnhancedText');
+        $duplicateContentController->addTag('contao.content_element', ['type' => 'text']);
+
+        $container = $this->getContainerWithFragmentServices();
+        $container->setDefinition('app.fragments.content_controller.enhanced_text', $duplicateContentController);
+        $container->setDefinition('app.fragments.content_controller.text', $contentController);
+
+        (new ResolveClassPass())->process($container);
+        $pass = new RegisterFragmentsPass(ContentElementReference::TAG_NAME);
+        $pass->process($container);
+
+        $definition = $container->findDefinition('contao.fragment._contao.content_element.text');
+
+        $this->assertInstanceOf(ChildDefinition::class, $definition);
+        $this->assertSame('app.fragments.content_controller.enhanced_text', $definition->getParent());
+    }
+
     public function testMakesFragmentServicesPublic(): void
     {
         $contentController = new Definition('App\Fragments\Text');
@@ -126,12 +154,55 @@ class RegisterFragmentsPassTest extends TestCase
         $pass = new RegisterFragmentsPass(ContentElementReference::TAG_NAME);
         $pass->process($container);
 
-        /** @var ChildDefinition $definition */
         $definition = $container->findDefinition('contao.fragment._contao.content_element.text');
 
         $this->assertInstanceOf(ChildDefinition::class, $definition);
         $this->assertSame('app.fragments.content_controller', $definition->getParent());
         $this->assertTrue($definition->isPublic());
+    }
+
+    public function testAddsContainerCallIfClassExtendsSymfonyAbstractController(): void
+    {
+        $definition = new Definition(TwoFactorController::class);
+        $definition->addTag('contao.frontend_module');
+
+        $container = $this->getContainerWithFragmentServices();
+        $container->setDefinition('app.fragments.two_factor', $definition);
+
+        (new ResolveClassPass())->process($container);
+
+        $pass = new RegisterFragmentsPass(FrontendModuleReference::TAG_NAME);
+        $pass->process($container);
+
+        $definition = $container->findDefinition('contao.fragment._contao.frontend_module.two_factor');
+        $calls = $definition->getMethodCalls();
+
+        $this->assertCount(2, $calls);
+        $this->assertSame('setContainer', $calls[1][0]);
+        $this->assertInstanceOf(Reference::class, $calls[1][1][0]);
+        $this->assertSame(ContainerInterface::class, (string) $calls[1][1][0]);
+    }
+
+    public function testCopiesTagsToChildDefinition(): void
+    {
+        $contentController = new Definition('App\Fragments\Text');
+        $contentController->setPublic(false);
+        $contentController->addTag('contao.content_element');
+        $contentController->addTag('foo.bar');
+
+        $container = $this->getContainerWithFragmentServices();
+        $container->setDefinition('app.fragments.content_controller', $contentController);
+
+        (new ResolveClassPass())->process($container);
+
+        $pass = new RegisterFragmentsPass(ContentElementReference::TAG_NAME);
+        $pass->process($container);
+
+        $definition = $container->findDefinition('contao.fragment._contao.content_element.text');
+
+        $this->assertInstanceOf(ChildDefinition::class, $definition);
+        $this->assertSame('app.fragments.content_controller', $definition->getParent());
+        $this->assertSame(['foo.bar' => [[]]], $definition->getTags());
     }
 
     public function testRegistersThePreHandlers(): void
@@ -153,7 +224,7 @@ class RegisterFragmentsPassTest extends TestCase
 
         $this->assertSame(
             'contao.fragment._contao.content_element.fragment_pre_handler_interface',
-            (string) $arguments[0]['contao.content_element.fragment_pre_handler_interface']
+            (string) $arguments[0]['contao.content_element.fragment_pre_handler_interface'],
         );
     }
 
@@ -165,6 +236,7 @@ class RegisterFragmentsPassTest extends TestCase
         $container = new ContainerBuilder();
         $container->setDefinition('contao.fragment.registry', new Definition());
         $container->setDefinition('contao.command.debug_fragments', new Definition());
+        $container->setDefinition('contao.fragment.compositor', new Definition());
         $container->setDefinition('app.fragments.content_controller', $contentController);
 
         (new ResolveClassPass())->process($container);
@@ -175,6 +247,126 @@ class RegisterFragmentsPassTest extends TestCase
         $this->expectExceptionMessage('Missing service definition for "contao.fragment.pre_handlers"');
 
         $pass->process($container);
+    }
+
+    public function testRegistersTheGlobalsMapListener(): void
+    {
+        $contentController = new Definition('App\Fragments\Text');
+        $contentController->addTag('contao.content_element', ['category' => 'content']);
+
+        $container = $this->getContainerWithFragmentServices();
+        $container->setDefinition('app.fragments.content_controller', $contentController);
+
+        (new ResolveClassPass())->process($container);
+
+        $pass = new RegisterFragmentsPass(ContentElementReference::TAG_NAME, 'TL_CTE', ContentProxy::class);
+        $pass->process($container);
+
+        $definition = null;
+
+        foreach ($container->getDefinitions() as $def) {
+            if (GlobalsMapListener::class === $def->getClass()) {
+                $definition = $def;
+                break;
+            }
+        }
+
+        $this->assertNotNull($definition);
+
+        $this->assertSame(
+            [
+                'contao.hook' => [
+                    [
+                        'hook' => 'initializeSystem',
+                        'priority' => 255,
+                    ],
+                ],
+            ],
+            $definition->getTags(),
+        );
+
+        $this->assertSame(
+            [
+                'TL_CTE' => [[
+                    'content' => [
+                        'text' => ContentProxy::class,
+                    ],
+                ]],
+            ],
+            $definition->getArguments()[0],
+        );
+
+        $this->assertTrue($definition->isPublic());
+    }
+
+    public function testFailsToRegisterGlobalsMapListenerIfCategoryIsMissing(): void
+    {
+        $contentController = new Definition('App\Fragments\Text');
+        $contentController->addTag('contao.content_element');
+
+        $container = $this->getContainerWithFragmentServices();
+        $container->setDefinition('app.fragments.content_controller', $contentController);
+
+        (new ResolveClassPass())->process($container);
+
+        $pass = new RegisterFragmentsPass(ContentElementReference::TAG_NAME, 'TL_CTE', ContentProxy::class);
+
+        $this->expectException(InvalidConfigurationException::class);
+
+        $pass->process($container);
+    }
+
+    #[DataProvider('provideTemplateNames')]
+    public function testSetsTemplatesInTemplatesOptionsListener(string|null $template, array $expectedCustomTemplates): void
+    {
+        $contentController = new Definition('App\Controller\TextController');
+        $contentController->addTag('contao.content_element', array_filter(['template' => $template]));
+
+        $container = $this->getContainerWithFragmentServices();
+        $container->setDefinition('app.fragments.content_controller', $contentController);
+        $container->setDefinition('contao.listener.data_container.template_options', $templateOptionsListener = new Definition());
+
+        (new ResolveClassPass())->process($container);
+
+        $pass = new RegisterFragmentsPass(
+            ContentElementReference::TAG_NAME,
+            templateOptionsListener: 'contao.listener.data_container.template_options',
+            dca: 'tl_content',
+        );
+
+        $pass->process($container);
+
+        $this->assertCount(1, $calls = $templateOptionsListener->getMethodCalls());
+        $this->assertSame('setDefaultIdentifiersByType', $calls[0][0]);
+        $this->assertSame(['tl_content', $expectedCustomTemplates], $calls[0][1]);
+    }
+
+    public static function provideTemplateNames(): iterable
+    {
+        yield 'legacy template' => [
+            'ce_text',
+            ['text' => 'ce_text'],
+        ];
+
+        yield 'legacy template, alternative name' => [
+            'ce_foo',
+            ['text' => 'ce_foo'],
+        ];
+
+        yield 'template inferred from type' => [
+            null,
+            ['text' => 'content_element/text'],
+        ];
+
+        yield 'modern template' => [
+            'content_element/text',
+            ['text' => 'content_element/text'],
+        ];
+
+        yield 'modern template, alternative name' => [
+            'content_element/foobar',
+            ['text' => 'content_element/foobar'],
+        ];
     }
 
     public function testDoesNothingIfThereIsNoFragmentRegistry(): void
@@ -194,6 +386,7 @@ class RegisterFragmentsPassTest extends TestCase
         $container = new ContainerBuilder();
         $container->setDefinition('contao.fragment.registry', new Definition(FragmentRegistry::class));
         $container->setDefinition('contao.fragment.pre_handlers', new Definition(ServiceLocator::class, [[]]));
+        $container->setDefinition('contao.fragment.compositor', new Definition(FragmentCompositor::class, [[]]));
 
         return $container;
     }

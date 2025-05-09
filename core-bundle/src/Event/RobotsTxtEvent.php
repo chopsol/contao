@@ -19,26 +19,11 @@ use webignition\RobotsTxt\File\File;
 
 class RobotsTxtEvent extends Event
 {
-    /**
-     * @var File
-     */
-    private $file;
-
-    /**
-     * @var Request
-     */
-    private $request;
-
-    /**
-     * @var PageModel
-     */
-    private $rootPage;
-
-    public function __construct(File $file, Request $request, PageModel $rootPage)
-    {
-        $this->file = $file;
-        $this->request = $request;
-        $this->rootPage = $rootPage;
+    public function __construct(
+        private readonly File $file,
+        private readonly Request $request,
+        private readonly PageModel $rootPage,
+    ) {
     }
 
     public function getFile(): File

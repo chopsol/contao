@@ -15,55 +15,35 @@ namespace Contao\CoreBundle\Command;
 use Contao\BackendUser;
 use Contao\Config;
 use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\UserGroupModel;
+use Contao\CoreBundle\Intl\Locales;
 use Contao\Validator;
 use Doctrine\DBAL\Connection;
-use Patchwork\Utf8;
+use Doctrine\DBAL\Types\Types;
+use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Helper\QuestionHelper;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\ChoiceQuestion;
 use Symfony\Component\Console\Question\Question;
 use Symfony\Component\Console\Style\SymfonyStyle;
-use Symfony\Component\Security\Core\Encoder\EncoderFactoryInterface;
+use Symfony\Component\PasswordHasher\Hasher\PasswordHasherFactoryInterface;
 
-/**
- * Creates a new Contao back end user.
- *
- * @internal
- */
+#[AsCommand(
+    name: 'contao:user:create',
+    description: 'Create a new Contao back end user.',
+)]
 class UserCreateCommand extends Command
 {
-    protected static $defaultName = 'contao:user:create';
+    private readonly array $locales;
 
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    /**
-     * @var Connection
-     */
-    private $connection;
-
-    /**
-     * @var EncoderFactoryInterface
-     */
-    private $encoderFactory;
-
-    /**
-     * @var array
-     */
-    private $locales;
-
-    public function __construct(ContaoFramework $framework, Connection $connection, EncoderFactoryInterface $encoderFactory, array $locales)
-    {
-        $this->framework = $framework;
-        $this->connection = $connection;
-        $this->encoderFactory = $encoderFactory;
-        $this->locales = $locales;
+    public function __construct(
+        private readonly ContaoFramework $framework,
+        private readonly Connection $connection,
+        private readonly PasswordHasherFactoryInterface $passwordHasherFactory,
+        Locales $locales,
+    ) {
+        $this->locales = $locales->getEnabledLocaleIds();
 
         parent::__construct();
     }
@@ -73,13 +53,12 @@ class UserCreateCommand extends Command
         $this
             ->addOption('username', 'u', InputOption::VALUE_REQUIRED, 'The username to create')
             ->addOption('name', null, InputOption::VALUE_REQUIRED, 'The full name')
-            ->addOption('email', null, InputOption::VALUE_REQUIRED, 'The email address')
+            ->addOption('email', null, InputOption::VALUE_REQUIRED, 'The e-mail address')
             ->addOption('password', 'p', InputOption::VALUE_REQUIRED, 'The password')
             ->addOption('language', null, InputOption::VALUE_REQUIRED, 'The user language (ISO 639-1 language code)')
             ->addOption('admin', null, InputOption::VALUE_NONE, 'Give admin permissions to the new user')
             ->addOption('group', null, InputOption::VALUE_OPTIONAL | InputOption::VALUE_IS_ARRAY, 'The groups to assign the user to')
             ->addOption('change-password', null, InputOption::VALUE_NONE, 'Require user to change the password on the first back end login')
-            ->setDescription('Create a new Contao back end user.')
         ;
     }
 
@@ -99,14 +78,14 @@ class UserCreateCommand extends Command
 
         $emailCallback = static function ($value) {
             if (!Validator::isEmail($value)) {
-                throw new \InvalidArgumentException('The email address is invalid.');
+                throw new \InvalidArgumentException('The e-mail address is invalid.');
             }
 
             return $value;
         };
 
         if (null === $input->getOption('email')) {
-            $email = $this->ask('Please enter the email address: ', $input, $output, $emailCallback);
+            $email = $this->ask('Please enter the e-mail address: ', $input, $output, $emailCallback);
 
             $input->setOption('email', $email);
         } else {
@@ -119,22 +98,21 @@ class UserCreateCommand extends Command
             $input->setOption('language', $language);
         }
 
-        /** @var Config $config */
         $config = $this->framework->getAdapter(Config::class);
         $minLength = $config->get('minPasswordLength');
         $username = $input->getOption('username');
 
-        $passwordCallback = static function ($value) use ($username, $minLength): string {
+        $passwordCallback = static function ($value) use ($minLength, $username): string {
             if ('' === trim($value)) {
                 throw new \RuntimeException('The password cannot be empty');
             }
 
-            if (Utf8::strlen($value) < $minLength) {
-                throw new \RuntimeException(sprintf('Please use at least %d characters.', $minLength));
+            if (mb_strlen($value) < $minLength) {
+                throw new \RuntimeException(\sprintf('Please use at least %d characters.', $minLength));
             }
 
             if ($value === $username) {
-                throw new \RuntimeException(sprintf('Username and password must not be equal.'));
+                throw new \RuntimeException('Username and password must not be the same.');
             }
 
             return $value;
@@ -143,7 +121,7 @@ class UserCreateCommand extends Command
         if (null === $input->getOption('password')) {
             $password = $this->askForPassword('Please enter the new password: ', $input, $output, $passwordCallback);
 
-            $confirmCallback = static function ($value) use ($password): string {
+            $confirmCallback = static function (#[\SensitiveParameter] $value) use ($password): string {
                 if ($password !== $value) {
                     throw new \RuntimeException('The passwords do not match.');
                 }
@@ -164,13 +142,8 @@ class UserCreateCommand extends Command
             $input->setOption('admin', 'yes' === $answer);
         }
 
-        if (false === $input->getOption('admin') && ($options = $this->getGroups()) && 0 !== \count($options)) {
-            $answer = $this->askMultipleChoice(
-                'Assign which groups to the user (select multiple comma-separated)?',
-                $options,
-                $input,
-                $output
-            );
+        if (false === $input->getOption('admin') && ($options = $this->getGroups())) {
+            $answer = $this->askForUserGroups($options, $input, $output);
 
             $input->setOption('group', array_values(array_intersect_key(array_flip($options), array_flip($answer))));
         }
@@ -188,7 +161,7 @@ class UserCreateCommand extends Command
         ) {
             $io->error('Please provide at least and each of: username, name, email, password');
 
-            return 1;
+            return Command::FAILURE;
         }
 
         $isAdmin = $input->getOption('admin');
@@ -201,21 +174,20 @@ class UserCreateCommand extends Command
             $input->getOption('language') ?? 'en',
             $isAdmin,
             $input->getOption('group'),
-            $input->getOption('change-password')
+            $input->getOption('change-password'),
         );
 
-        $io->success(sprintf('User %s%s created.', $username, $isAdmin ? ' with admin permissions' : ''));
+        $io->success(\sprintf('User %s%s created.', $username, $isAdmin ? ' with admin permissions' : ''));
 
-        return 0;
+        return Command::SUCCESS;
     }
 
-    private function ask(string $label, InputInterface $input, OutputInterface $output, callable $callback = null): string
+    private function ask(string $label, InputInterface $input, OutputInterface $output, callable|null $callback = null): string
     {
         $question = new Question($label);
         $question->setMaxAttempts(3);
         $question->setValidator($callback);
 
-        /** @var QuestionHelper $helper */
         $helper = $this->getHelper('question');
 
         return $helper->ask($input, $output, $question);
@@ -228,7 +200,6 @@ class UserCreateCommand extends Command
         $question->setMaxAttempts(3);
         $question->setValidator($callback);
 
-        /** @var QuestionHelper $helper */
         $helper = $this->getHelper('question');
 
         return $helper->ask($input, $output, $question);
@@ -239,19 +210,17 @@ class UserCreateCommand extends Command
         $question = new ChoiceQuestion($label, $options);
         $question->setAutocompleterValues($options);
 
-        /** @var QuestionHelper $helper */
         $helper = $this->getHelper('question');
 
         return $helper->ask($input, $output, $question);
     }
 
-    private function askMultipleChoice(string $label, array $options, InputInterface $input, OutputInterface $output): array
+    private function askForUserGroups(array $options, InputInterface $input, OutputInterface $output): array
     {
-        $question = new ChoiceQuestion($label, $options);
+        $question = new ChoiceQuestion('Assign which groups to the user (select multiple comma-separated)?', $options);
         $question->setAutocompleterValues($options);
         $question->setMultiselect(true);
 
-        /** @var QuestionHelper $helper */
         $helper = $this->getHelper('question');
 
         return $helper->ask($input, $output, $question);
@@ -259,39 +228,31 @@ class UserCreateCommand extends Command
 
     private function getGroups(): array
     {
-        $this->framework->initialize();
-
-        /** @var UserGroupModel $userGroupModel */
-        $userGroupModel = $this->framework->getAdapter(UserGroupModel::class);
-        $groups = $userGroupModel->findAll();
-
-        if (null === $groups) {
-            return [];
-        }
-
-        return $groups->fetchEach('name');
+        return $this->connection->fetchAllKeyValue('SELECT id, name FROM tl_user_group');
     }
 
-    private function persistUser(string $username, string $name, string $email, string $password, string $language, bool $isAdmin = false, array $groups = null, bool $pwChange = false): void
+    private function persistUser(string $username, string $name, string $email, string $password, string $language, bool $isAdmin = false, array|null $groups = null, bool $pwChange = false): void
     {
         $time = time();
-        $hash = $this->encoderFactory->getEncoder(BackendUser::class)->encodePassword($password, null);
+        $hash = $this->passwordHasherFactory->getPasswordHasher(BackendUser::class)->hash($password);
 
-        $this->connection->insert(
-            'tl_user',
-            [
-                'tstamp' => $time,
-                'name' => $name,
-                'email' => $email,
-                'username' => $username,
-                'password' => $hash,
-                'language' => $language,
-                'backendTheme' => 'flexible',
-                'admin' => $isAdmin,
-                'pwChange' => $pwChange,
-                'dateAdded' => $time,
-                'groups' => !$isAdmin && !empty($groups) ? serialize(array_map('strval', $groups)) : '',
-            ]
-        );
+        $data = [
+            'tstamp' => $time,
+            'name' => $name,
+            'email' => $email,
+            'username' => $username,
+            'password' => $hash,
+            'language' => $language,
+            'backendTheme' => 'flexible',
+            'admin' => $isAdmin,
+            'pwChange' => $pwChange,
+            'dateAdded' => $time,
+        ];
+
+        if (!$isAdmin && $groups) {
+            $data[$this->connection->quoteIdentifier('groups')] = serialize(array_map(\strval(...), $groups));
+        }
+
+        $this->connection->insert('tl_user', $data, ['admin' => Types::BOOLEAN, 'pwChange' => Types::BOOLEAN]);
     }
 }

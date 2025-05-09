@@ -12,12 +12,16 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Tests\Contao;
 
+use Contao\CoreBundle\Fixtures\Contao\FoobarWidget;
+use Contao\CoreBundle\Routing\ScopeMatcher;
+use Contao\CoreBundle\Tests\TestCase;
 use Contao\Input;
 use Contao\System;
+use Contao\TextField;
 use Contao\Widget;
-use PHPUnit\Framework\MockObject\MockObject;
-use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
 
 class WidgetTest extends TestCase
@@ -28,14 +32,25 @@ class WidgetTest extends TestCase
 
         $container = new ContainerBuilder();
         $container->set('request_stack', new RequestStack());
+        $container->set('contao.routing.scope_matcher', $this->createMock(ScopeMatcher::class));
+        $container->setParameter('kernel.charset', 'UTF-8');
+        $container->setParameter('contao.image.valid_extensions', ['jpg', 'gif', 'png']);
 
         System::setContainer($container);
     }
 
+    protected function tearDown(): void
+    {
+        $this->resetStaticProperties([Input::class, System::class]);
+
+        parent::tearDown();
+    }
+
     /**
-     * @dataProvider postProvider
+     * @param array<string>|string $value
      */
-    public function testReadsThePostData(string $key, string $input, $value, string $expected = null): void
+    #[DataProvider('postProvider')]
+    public function testReadsThePostData(string $key, string $input, array|string $value, string|null $expected = null): void
     {
         // Prevent "undefined index" errors
         $errorReporting = error_reporting();
@@ -45,19 +60,18 @@ class WidgetTest extends TestCase
 
         $class = new \ReflectionClass(Widget::class);
         $method = $class->getMethod('getPost');
-        $method->setAccessible(true);
 
-        $_POST = [$input => $value];
-        Input::resetCache();
-        Input::initialize();
+        System::getContainer()->set('request_stack', $stack = new RequestStack());
+        $stack->push(new Request([], [$input => $value]));
 
         $this->assertSame($expected, $method->invoke($widget, $key));
 
         // Restore the error reporting level
         error_reporting($errorReporting);
+        $_POST = [];
     }
 
-    public function postProvider(): \Generator
+    public static function postProvider(): iterable
     {
         yield [
             'foo',
@@ -125,12 +139,14 @@ class WidgetTest extends TestCase
 
     public function testValidatesThePostData(): void
     {
-        /** @var Widget&MockObject $widget */
+        System::getContainer()->set('request_stack', $stack = new RequestStack());
+        $stack->push(new Request());
+
         $widget = $this
-            ->getMockBuilder(Widget::class)
+            ->getMockBuilder(FoobarWidget::class)
             ->disableOriginalConstructor()
             ->onlyMethods(['validator'])
-            ->getMockForAbstractClass()
+            ->getMock()
         ;
 
         $widget
@@ -141,22 +157,14 @@ class WidgetTest extends TestCase
         ;
 
         $widget
-            ->setInputCallback(
-                static function (): string {
-                    return 'foobar';
-                }
-            )
+            ->setInputCallback(static fn (): string => 'foobar')
             ->validate()
         ;
 
         $this->assertSame('foobar', $widget->value);
 
         $widget
-            ->setInputCallback(
-                static function () {
-                    return null;
-                }
-            )
+            ->setInputCallback(static fn () => null)
             ->validate()
         ;
 
@@ -165,6 +173,94 @@ class WidgetTest extends TestCase
         $widget
             ->setInputCallback()
             ->validate() // getPost() should be called once here
-;
+        ;
+    }
+
+    #[DataProvider('getAttributesFromDca')]
+    public function testGetsAttributesFromDca(array $parameters, array $expected): void
+    {
+        $attrs = Widget::getAttributesFromDca(...$parameters);
+
+        foreach ($expected as $key => $value) {
+            $this->assertSame($value, $attrs[$key]);
+        }
+
+        if (isset($parameters[2])) {
+            $widget = (new \ReflectionClass(TextField::class))->newInstanceWithoutConstructor();
+            $widget->addAttributes($attrs);
+            $this->assertSame($parameters[2], $widget->value);
+        }
+    }
+
+    public static function getAttributesFromDca(): iterable
+    {
+        yield [
+            [[], 'foo'],
+            [
+                'name' => 'foo',
+                'id' => 'foo',
+            ],
+        ];
+
+        yield [
+            [['eval' => ['foo' => '%kernel.charset%']], 'name'],
+            [
+                'foo' => 'UTF-8',
+            ],
+        ];
+
+        yield [
+            [['eval' => ['foo' => 'bar%kernel.charset%baz']], 'name'],
+            [
+                'foo' => 'barUTF-8baz',
+            ],
+        ];
+
+        yield [
+            [['eval' => ['foo' => '%%b%%ar%kernel.charset%ba%%z']], 'name'],
+            [
+                'foo' => '%b%arUTF-8ba%z',
+            ],
+        ];
+
+        yield [
+            [['eval' => ['foo' => '%%% xxx %%%']], 'name'],
+            [
+                'foo' => '%%% xxx %%%',
+            ],
+        ];
+
+        yield [
+            [['eval' => ['foo' => '50% discount 20% VAT']], 'name'],
+            [
+                'foo' => '50% discount 20% VAT',
+            ],
+        ];
+
+        yield [
+            [['eval' => ['extensions' => '%contao.image.valid_extensions%']], 'name'],
+            [
+                'extensions' => ['jpg', 'gif', 'png'],
+            ],
+        ];
+
+        yield [
+            [[], 'name', '&amp;,&lt;,&gt;,&nbsp;,&shy;'],
+            [
+                'value' => '&amp;,&lt;,&gt;,&nbsp;,&shy;',
+            ],
+        ];
+
+        yield [
+            [
+                ['eval' => ['basicEntities' => true]],
+                'name',
+                '&amp;,&lt;,&gt;,&nbsp;,&shy;',
+            ],
+            [
+                'basicEntities' => true,
+                'value' => '[&],[lt],[gt],[nbsp],[-]',
+            ],
+        ];
     }
 }

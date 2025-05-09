@@ -12,75 +12,37 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\Image\Studio;
 
-use Contao\CoreBundle\Asset\ContaoContext;
-use Contao\CoreBundle\Framework\ContaoFramework;
-use Contao\CoreBundle\Image\ImageFactoryInterface;
-use Contao\CoreBundle\Image\PictureFactoryInterface;
 use Contao\Image\ImageInterface;
 use Contao\Image\PictureConfiguration;
+use Contao\Image\ResizeOptions;
 use Psr\Container\ContainerInterface;
-use Symfony\Contracts\Service\ServiceSubscriberInterface;
 
-class Studio implements ServiceSubscriberInterface
+class Studio
 {
     /**
-     * @var ContainerInterface
+     * @param array<string> $validExtensions
      */
-    private $locator;
-
-    /**
-     * @var string
-     */
-    private $projectDir;
-
-    /**
-     * @var string
-     */
-    private $uploadPath;
-
-    /**
-     * @var array<string>
-     */
-    private $validExtensions;
-
-    public function __construct(ContainerInterface $locator, string $projectDir, string $uploadPath, array $validExtensions)
-    {
-        $this->locator = $locator;
-        $this->projectDir = $projectDir;
-        $this->uploadPath = $uploadPath;
-        $this->validExtensions = $validExtensions;
+    public function __construct(
+        private readonly ContainerInterface $locator,
+        private readonly string $projectDir,
+        private readonly string $uploadPath,
+        private readonly string $webDir,
+        private readonly array $validExtensions,
+    ) {
     }
 
     public function createFigureBuilder(): FigureBuilder
     {
-        return new FigureBuilder($this->locator, $this->projectDir, $this->uploadPath, $this->validExtensions);
+        return new FigureBuilder($this->locator, $this->projectDir, $this->uploadPath, $this->webDir, $this->validExtensions);
     }
 
-    /**
-     * @param string|ImageInterface $filePathOrImage
-     */
-    public function createImage($filePathOrImage, $sizeConfiguration): ImageResult
+    public function createImage(ImageInterface|string $filePathOrImage, PictureConfiguration|array|int|string|null $sizeConfiguration, ResizeOptions|null $resizeOptions = null): ImageResult
     {
-        return new ImageResult($this->locator, $this->projectDir, $filePathOrImage, $sizeConfiguration);
+        return new ImageResult($this->locator, $this->projectDir, $filePathOrImage, $sizeConfiguration, $resizeOptions);
     }
 
-    /**
-     * @param string|ImageInterface|null                 $filePathOrImage
-     * @param array|PictureConfiguration|int|string|null $sizeConfiguration
-     */
-    public function createLightboxImage($filePathOrImage, string $url = null, $sizeConfiguration = null, string $groupIdentifier = null): LightboxResult
+    public function createLightboxImage(ImageInterface|string|null $filePathOrImage, string|null $url = null, PictureConfiguration|array|int|string|null $sizeConfiguration = null, string|null $groupIdentifier = null, ResizeOptions|null $resizeOptions = null): LightboxResult
     {
-        return new LightboxResult($this->locator, $filePathOrImage, $url, $sizeConfiguration, $groupIdentifier);
-    }
-
-    public static function getSubscribedServices(): array
-    {
-        return [
-            self::class,
-            'contao.image.picture_factory' => PictureFactoryInterface::class,
-            'contao.image.image_factory' => ImageFactoryInterface::class,
-            'contao.assets.files_context' => ContaoContext::class,
-            'contao.framework' => ContaoFramework::class,
-        ];
+        return new LightboxResult($this->locator, $filePathOrImage, $url, $sizeConfiguration, $groupIdentifier, $resizeOptions);
     }
 }

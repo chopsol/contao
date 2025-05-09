@@ -18,20 +18,10 @@ use Contao\OptInModel;
 
 class OptInToken implements OptInTokenInterface
 {
-    /**
-     * @var OptInModel
-     */
-    private $model;
-
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    public function __construct(OptInModel $model, ContaoFramework $framework)
-    {
-        $this->model = $model;
-        $this->framework = $framework;
+    public function __construct(
+        private readonly OptInModel $model,
+        private readonly ContaoFramework $framework,
+    ) {
     }
 
     public function getIdentifier(): string
@@ -70,7 +60,6 @@ class OptInToken implements OptInTokenInterface
             return;
         }
 
-        /** @var OptInModel $adapter */
         $adapter = $this->framework->getAdapter(OptInModel::class);
         $prefix = strtok($this->getIdentifier(), '-');
 
@@ -85,7 +74,7 @@ class OptInToken implements OptInTokenInterface
                     $model->confirmedOn > 0
                     || $model->invalidatedThrough
                     || $model->token === $this->getIdentifier()
-                    || 0 !== strncmp($model->token, $prefix.'-', \strlen($prefix) + 1)
+                    || 0 !== strncmp($model->token, $prefix.'-', \strlen((string) $prefix) + 1)
                 ) {
                     continue;
                 }
@@ -108,10 +97,7 @@ class OptInToken implements OptInTokenInterface
         return $this->model->confirmedOn > 0;
     }
 
-    /**
-     * @throws \LogicException
-     */
-    public function send(string $subject = null, string $text = null): void
+    public function send(string|null $subject = null, string|null $text = null): void
     {
         if ($this->isConfirmed()) {
             throw new OptInTokenAlreadyConfirmedException();
@@ -131,10 +117,11 @@ class OptInToken implements OptInTokenInterface
             $this->model->save();
         }
 
-        /** @var Email $email */
         $email = $this->framework->createInstance(Email::class);
         $email->subject = $this->model->emailSubject;
         $email->text = $this->model->emailText;
+        $email->from = $GLOBALS['TL_ADMIN_EMAIL'] ?? null;
+        $email->fromName = $GLOBALS['TL_ADMIN_NAME'] ?? null;
         $email->sendTo($this->model->email);
     }
 

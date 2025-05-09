@@ -20,34 +20,25 @@ use Contao\StringUtil;
 class Slug
 {
     /**
-     * @var SlugGeneratorInterface
+     * @internal
      */
-    private $slugGenerator;
-
-    /**
-     * @var ContaoFramework
-     */
-    private $framework;
-
-    /**
-     * @internal Do not inherit from this class; decorate the "contao.slug" service instead
-     */
-    public function __construct(SlugGeneratorInterface $slugGenerator, ContaoFramework $framework)
-    {
-        $this->slugGenerator = $slugGenerator;
-        $this->framework = $framework;
+    public function __construct(
+        private readonly SlugGeneratorInterface $slugGenerator,
+        private readonly ContaoFramework $framework,
+    ) {
     }
 
     /**
-     * @param int|iterable $options A page ID, object or options array {@see SlugGeneratorInterface::generate()}
+     * @param int|iterable $options A page ID, object or options array
+     *
+     * @see SlugGeneratorInterface::generate()
      */
-    public function generate(string $text, $options = [], callable $duplicateCheck = null, string $integerPrefix = 'id-'): string
+    public function generate(string $text, int|iterable $options = [], callable|null $duplicateCheck = null, string $integerPrefix = 'id-'): string
     {
         if (!is_iterable($options)) {
-            /** @var PageModel $pageAdapter */
             $pageAdapter = $this->framework->getAdapter(PageModel::class);
 
-            if (null !== ($page = $pageAdapter->findWithDetails((int) $options))) {
+            if ($page = $pageAdapter->findWithDetails((int) $options)) {
                 $options = $page->getSlugOptions();
             } else {
                 $options = [];

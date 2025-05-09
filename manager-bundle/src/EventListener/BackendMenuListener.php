@@ -14,60 +14,28 @@ namespace Contao\ManagerBundle\EventListener;
 
 use Contao\CoreBundle\Event\MenuEvent;
 use Contao\ManagerBundle\HttpKernel\JwtManager;
+use Knp\Menu\Util\MenuManipulator;
+use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\Routing\RouterInterface;
-use Symfony\Component\Security\Core\Security;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
 /**
  * @internal
  */
+#[AsEventListener]
 class BackendMenuListener
 {
-    /**
-     * @var Security
-     */
-    private $security;
-
-    /**
-     * @var RouterInterface
-     */
-    private $router;
-
-    /**
-     * @var RequestStack
-     */
-    private $requestStack;
-
-    /**
-     * @var TranslatorInterface
-     */
-    private $translator;
-
-    /**
-     * @var bool
-     */
-    private $debug;
-
-    /**
-     * @var string
-     */
-    private $managerPath;
-
-    /**
-     * @var JwtManager
-     */
-    private $jwtManager;
-
-    public function __construct(Security $security, RouterInterface $router, RequestStack $requestStack, TranslatorInterface $translator, bool $debug, ?string $managerPath, ?JwtManager $jwtManager)
-    {
-        $this->security = $security;
-        $this->router = $router;
-        $this->requestStack = $requestStack;
-        $this->translator = $translator;
-        $this->debug = $debug;
-        $this->managerPath = $managerPath;
-        $this->jwtManager = $jwtManager;
+    public function __construct(
+        private readonly Security $security,
+        private readonly RouterInterface $router,
+        private readonly RequestStack $requestStack,
+        private readonly TranslatorInterface $translator,
+        private readonly bool $debug,
+        private readonly string|null $managerPath,
+        private readonly JwtManager|null $jwtManager,
+    ) {
     }
 
     public function __invoke(MenuEvent $event): void
@@ -85,7 +53,7 @@ class BackendMenuListener
      */
     private function addDebugButton(MenuEvent $event): void
     {
-        if (null === $this->jwtManager) {
+        if (!$this->jwtManager) {
             return;
         }
 
@@ -118,26 +86,14 @@ class BackendMenuListener
             ->setUri($this->router->generate('contao_backend', $params))
             ->setLinkAttribute('class', $class)
             ->setLinkAttribute('title', $this->translator->trans('debug_mode', [], 'ContaoManagerBundle'))
+            ->setLinkAttribute('data-turbo-prefetch', 'false')
             ->setExtra('translation_domain', 'ContaoManagerBundle')
         ;
 
-        $children = [];
+        $tree->addChild($debug);
 
-        // Try adding the debug button after the alerts button
-        foreach ($tree->getChildren() as $name => $item) {
-            $children[$name] = $item;
-
-            if ('alerts' === $name) {
-                $children['debug'] = $debug;
-            }
-        }
-
-        // Prepend the debug button if it could not be added above
-        if (!isset($children['debug'])) {
-            $children = ['debug' => $debug] + $children;
-        }
-
-        $tree->setChildren($children);
+        // The last two items are "submenu" and "burger", so make this the third to last
+        (new MenuManipulator())->moveToPosition($debug, $tree->count() - 3);
     }
 
     /**
@@ -151,15 +107,17 @@ class BackendMenuListener
 
         $categoryNode = $event->getTree()->getChild('system');
 
-        if (null === $categoryNode) {
+        if (!$categoryNode || (!$request = $this->requestStack->getCurrentRequest())) {
             return;
         }
 
         $item = $event->getFactory()
             ->createItem('contao_manager')
             ->setLabel('Contao Manager')
-            ->setUri('/'.$this->managerPath)
+            ->setUri($request->getUriForPath('/'.$this->managerPath))
             ->setLinkAttribute('class', 'navigation contao_manager')
+            ->setLinkAttribute('title', $this->translator->trans('contao_manager_title', [], 'ContaoManagerBundle'))
+            ->setExtra('translation_domain', false)
         ;
 
         $categoryNode->addChild($item);

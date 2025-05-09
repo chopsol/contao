@@ -1,0 +1,195 @@
+<?php
+
+declare(strict_types=1);
+
+/*
+ * This file is part of Contao.
+ *
+ * (c) Leo Feyer
+ *
+ * @license LGPL-3.0-or-later
+ */
+
+namespace Contao\CoreBundle\Tests\Twig;
+
+use Contao\CoreBundle\Tests\TestCase;
+use Contao\CoreBundle\Twig\ContaoTwigUtil;
+use PHPUnit\Framework\Attributes\DataProvider;
+
+class ContaoTwigUtilTest extends TestCase
+{
+    #[DataProvider('provideContaoNames')]
+    public function testParseContaoNameSplitsNames(string $name, string $expectedNamespace, string|null $expectedShortName): void
+    {
+        [$namespace, $shortName] = ContaoTwigUtil::parseContaoName($name);
+
+        $this->assertSame($expectedNamespace, $namespace, 'namespace');
+        $this->assertSame($expectedShortName, $shortName, 'short name');
+    }
+
+    public static function provideContaoNames(): iterable
+    {
+        yield 'base namespace' => [
+            '@Contao/foo.html.twig',
+            'Contao',
+            'foo.html.twig',
+        ];
+
+        yield 'sub namespace' => [
+            '@Contao_Bar/foo.html.twig',
+            'Contao_Bar',
+            'foo.html.twig',
+        ];
+
+        yield 'complex name and namespace' => [
+            '@Contao_a-b_c/f~oo.html.twig',
+            'Contao_a-b_c',
+            'f~oo.html.twig',
+        ];
+
+        yield 'legacy template' => [
+            '@Contao_Foo/foo.html5',
+            'Contao_Foo',
+            'foo.html5',
+        ];
+
+        yield 'only base namespace' => [
+            '@Contao',
+            'Contao',
+            null,
+        ];
+
+        yield 'only sub namespace' => [
+            '@Contao_foo_bar',
+            'Contao_foo_bar',
+            null,
+        ];
+    }
+
+    #[DataProvider('provideInvalidNamespaces')]
+    public function testParseContaoNameIgnoresInvalidNamespaces(string $name): void
+    {
+        $this->assertNull(ContaoTwigUtil::parseContaoName($name));
+    }
+
+    public static function provideInvalidNamespaces(): iterable
+    {
+        yield 'not a Contao namespace' => ['@Foobar/foo.html.twig'];
+        yield 'invalid characters' => ['@Contao_:Foo'];
+        yield 'no namespace' => ['foo.html.twig'];
+        yield 'empty input' => [''];
+    }
+
+    #[DataProvider('provideNames')]
+    public function testGetIdentifier(string $name, string $expectedIdentifier): void
+    {
+        $this->assertSame($expectedIdentifier, ContaoTwigUtil::getIdentifier($name));
+    }
+
+    public static function provideNames(): iterable
+    {
+        yield 'html5 template' => [
+            'bar.html5',
+            'bar',
+        ];
+
+        yield 'HTML Twig template' => [
+            'bar.html.twig',
+            'bar',
+        ];
+
+        yield 'JSON Twig template' => [
+            'bar.json.twig',
+            'bar',
+        ];
+
+        yield 'complex name (html5)' => [
+            '@Foo/bar/foo.html5',
+            'bar/foo',
+        ];
+
+        yield 'complex name (Twig)' => [
+            '@Foo/bar/foo.html.twig',
+            'bar/foo',
+        ];
+
+        yield 'not a Contao template extension' => [
+            'foo/bar.txt',
+            'foo/bar.txt',
+        ];
+
+        yield 'already an identifier' => [
+            'foo',
+            'foo',
+        ];
+    }
+
+    #[DataProvider('provideLegacyTemplateNames')]
+    public function testIsLegacyTemplate(string $name, bool $isLegacyTemplate): void
+    {
+        $this->assertSame($isLegacyTemplate, ContaoTwigUtil::isLegacyTemplate($name));
+    }
+
+    public static function provideLegacyTemplateNames(): iterable
+    {
+        yield 'base namespace' => [
+            '@Contao/bar.html5',
+            true,
+        ];
+
+        yield 'sub namespace' => [
+            '@Contao_Foo/bar.html5',
+            true,
+        ];
+
+        yield 'uppercase extension' => [
+            '@Contao_Foo/bar.HTML5',
+            true,
+        ];
+
+        yield 'invalid file extension' => [
+            '@Contao/bar.html.twig',
+            false,
+        ];
+
+        yield 'not a Contao namespace' => [
+            '@Foo/bar.html5',
+            false,
+        ];
+
+        yield 'not a logical name (just namespace)' => [
+            '@Foo',
+            false,
+        ];
+
+        yield 'not a logical name (just short name)' => [
+            'bar.html5',
+            false,
+        ];
+
+        yield 'not a logical name (just identifier)' => [
+            'bar',
+            false,
+        ];
+
+        yield 'empty input' => [
+            '',
+            false,
+        ];
+    }
+
+    #[DataProvider('providePaths')]
+    public function testGetExtension(string $path, string $extension): void
+    {
+        $this->assertSame($extension, ContaoTwigUtil::getExtension($path));
+    }
+
+    public static function providePaths(): iterable
+    {
+        yield 'with .twig suffix' => ['foo/bar.baz.html.twig', 'html.twig'];
+
+        yield 'without .twig suffix' => ['foo/bar.baz.json', 'json'];
+
+        yield 'no extension' => ['foo/bar', ''];
+    }
+}

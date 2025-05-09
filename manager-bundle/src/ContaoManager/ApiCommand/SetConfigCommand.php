@@ -14,20 +14,19 @@ namespace Contao\ManagerBundle\ContaoManager\ApiCommand;
 
 use Contao\ManagerBundle\Api\Application;
 use Contao\ManagerBundle\Api\ManagerConfig;
+use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
-/**
- * @internal
- */
+#[AsCommand(
+    name: 'config:set',
+    description: 'Sets the Contao Manager configuration from a JSON string.',
+)]
 class SetConfigCommand extends Command
 {
-    /**
-     * @var ManagerConfig
-     */
-    private $managerConfig;
+    private readonly ManagerConfig $managerConfig;
 
     public function __construct(Application $application)
     {
@@ -38,22 +37,12 @@ class SetConfigCommand extends Command
 
     protected function configure(): void
     {
-        parent::configure();
-
-        $this
-            ->setName('config:set')
-            ->setDescription('Sets the Contao Manager configuration from a JSON string.')
-            ->addArgument('json', InputArgument::REQUIRED, 'The configuration as JSON string')
-        ;
+        $this->addArgument('json', InputArgument::REQUIRED, 'The configuration as JSON string');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $data = @json_decode($input->getArgument('json'), true);
-
-        if (null === $data) {
-            throw new \RuntimeException('Invalid JSON: '.json_last_error_msg());
-        }
+        $data = json_decode($input->getArgument('json'), true, 512, JSON_THROW_ON_ERROR);
 
         $this->managerConfig->write($data);
 

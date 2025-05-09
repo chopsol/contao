@@ -12,8 +12,8 @@ declare(strict_types=1);
 
 namespace Contao\CoreBundle\DependencyInjection\Security;
 
-use Contao\CoreBundle\Security\TwoFactor\BackupCodeManager;
 use Scheb\TwoFactorBundle\DependencyInjection\Factory\Security\TwoFactorFactory;
+use Scheb\TwoFactorBundle\DependencyInjection\Factory\Security\TwoFactorServicesFactory;
 use Symfony\Bundle\SecurityBundle\DependencyInjection\Security\Factory\AbstractFactory;
 use Symfony\Component\DependencyInjection\ChildDefinition;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -23,18 +23,18 @@ class ContaoLoginFactory extends AbstractFactory
 {
     public function __construct()
     {
-        $this->options = ['require_previous_session' => false];
+        $this->options = [
+            'require_previous_session' => false,
+            'auth_code_parameter_name' => 'verify',
+        ];
+
         $this->defaultSuccessHandlerOptions = [];
         $this->defaultFailureHandlerOptions = [];
     }
 
-    public function create(ContainerBuilder $container, $id, $config, $userProviderId, $defaultEntryPointId): array
+    public function getPriority(): int
     {
-        $ids = parent::create($container, $id, $config, $userProviderId, $defaultEntryPointId);
-
-        $this->createTwoFactorPreparationListener($container, $id);
-
-        return $ids;
+        return 0;
     }
 
     public function getPosition(): string
@@ -47,46 +47,49 @@ class ContaoLoginFactory extends AbstractFactory
         return 'contao-login';
     }
 
-    protected function createAuthProvider(ContainerBuilder $container, $id, $config, $userProviderId): string
+    public function createAuthenticator(ContainerBuilder $container, string $firewallName, array $config, string $userProviderId): string
     {
-        $twoFactorProviderId = TwoFactorFactory::PROVIDER_ID_PREFIX.$id;
+        $twoFactorAuthenticatorId = TwoFactorFactory::AUTHENTICATOR_ID_PREFIX.$firewallName;
+        $twoFactorFirewallConfigId = 'contao.security.two_factor_firewall_config.'.$firewallName;
 
         $container
-            ->setDefinition($twoFactorProviderId, new ChildDefinition(TwoFactorFactory::PROVIDER_DEFINITION_ID))
-            ->replaceArgument(0, $id)
-            ->replaceArgument(1, [])
-            ->replaceArgument(3, new Reference(BackupCodeManager::class))
+            ->setDefinition($twoFactorFirewallConfigId, new ChildDefinition(TwoFactorFactory::FIREWALL_CONFIG_DEFINITION_ID))
+            ->replaceArgument(0, $config)
+            ->replaceArgument(1, $firewallName)
         ;
 
-        $provider = 'contao.security.authentication_provider.'.$id;
+        $container
+            ->setDefinition($twoFactorAuthenticatorId, new ChildDefinition(TwoFactorFactory::AUTHENTICATOR_DEFINITION_ID))
+            ->replaceArgument(0, new Reference($twoFactorFirewallConfigId))
+            ->replaceArgument(2, new Reference($this->createAuthenticationSuccessHandler($container, $firewallName, $config)))
+            ->replaceArgument(3, new Reference($this->createAuthenticationFailureHandler($container, $firewallName, $config)))
+            ->replaceArgument(4, new Reference((new TwoFactorServicesFactory())->createAuthenticationRequiredHandler($container, $firewallName, $config, $twoFactorFirewallConfigId)))
+        ;
+
+        $this->createTwoFactorPreparationListener($container, $firewallName);
+        $this->createTwoFactorAuthenticationTokenCreatedListener($container, $firewallName);
+
+        $authenticatorId = 'contao.security.login_authenticator.'.$firewallName;
+        $options = array_intersect_key($config, $this->options);
 
         $container
-            ->setDefinition($provider, new ChildDefinition('contao.security.authentication_provider'))
+            ->setDefinition($authenticatorId, new ChildDefinition('contao.security.login_authenticator'))
             ->replaceArgument(0, new Reference($userProviderId))
-            ->replaceArgument(1, new Reference('security.user_checker.'.$id))
-            ->replaceArgument(2, $id)
-            ->replaceArgument(5, new Reference($twoFactorProviderId))
+            ->replaceArgument(1, new Reference($this->createAuthenticationSuccessHandler($container, $firewallName, $config)))
+            ->replaceArgument(2, new Reference($this->createAuthenticationFailureHandler($container, $firewallName, $config)))
+            ->replaceArgument(11, new Reference($twoFactorAuthenticatorId))
+            ->replaceArgument(12, $options)
         ;
 
-        return $provider;
+        return $authenticatorId;
     }
 
-    protected function getListenerId(): string
-    {
-        return 'contao.security.authentication_listener';
-    }
-
-    protected function createEntryPoint($container, $id, $config, $defaultEntryPointId): string
-    {
-        return 'contao.security.entry_point';
-    }
-
-    protected function createAuthenticationSuccessHandler($container, $id, $config): string
+    protected function createAuthenticationSuccessHandler(ContainerBuilder $container, string $id, array $config): string
     {
         return 'contao.security.authentication_success_handler';
     }
 
-    protected function createAuthenticationFailureHandler($container, $id, $config): string
+    protected function createAuthenticationFailureHandler(ContainerBuilder $container, string $id, array $config): string
     {
         return 'contao.security.authentication_failure_handler';
     }
@@ -100,9 +103,19 @@ class ContaoLoginFactory extends AbstractFactory
             ->replaceArgument(3, $firewallName)
             ->replaceArgument(4, true)
             ->replaceArgument(5, false)
-            ->addTag('kernel.event_listener', ['event' => 'security.authentication.success', 'method' => 'onLogin', 'priority' => PHP_INT_MAX])
-            ->addTag('kernel.event_listener', ['event' => 'scheb_two_factor.authentication.form', 'method' => 'onTwoFactorForm'])
-            ->addTag('kernel.event_listener', ['event' => 'kernel.finish_request', 'method' => 'onKernelFinishRequest'])
+            ->addTag('kernel.event_subscriber')
+        ;
+    }
+
+    private function createTwoFactorAuthenticationTokenCreatedListener(ContainerBuilder $container, string $firewallName): void
+    {
+        $listenerId = TwoFactorFactory::AUTHENTICATION_TOKEN_CREATED_LISTENER_ID_PREFIX.$firewallName;
+
+        $container
+            ->setDefinition($listenerId, new ChildDefinition(TwoFactorFactory::AUTHENTICATION_TOKEN_CREATED_LISTENER_DEFINITION_ID))
+            ->replaceArgument(0, $firewallName)
+            // Important: register event only for the specific firewall
+            ->addTag('kernel.event_subscriber', ['dispatcher' => 'security.event_dispatcher.'.$firewallName])
         ;
     }
 }
